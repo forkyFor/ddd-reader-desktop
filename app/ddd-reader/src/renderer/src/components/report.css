@@ -89,3 +89,50 @@
 .report-table tbody tr:last-child td {
     border-bottom: none;
 }
+
+.expandable-row {
+    cursor: pointer;
+}
+
+.expandable-row:hover td {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.details-box {
+    padding: 10px 10px 6px 10px;
+}
+
+.details-title {
+    font-weight: 700;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+
+.details-table-wrap {
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.details-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.details-table th {
+    text-align: left;
+    padding: 8px 8px;
+    border-bottom: 1px solid #2a2a2a;
+    font-weight: 700;
+}
+
+.details-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid #1f1f1f;
+    vertical-align: top;
+}
+
+.details-table tbody tr:last-child td {
+    border-bottom: none;
+}

@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import type { ReportDocument } from "../../../shared/reportModel";
+import { useState } from "react";
+import type { ReportDocument, ReportTableRow } from "../../../shared/reportModel";
 import "./report.css";
 
 function clamp(n: number, min: number, max: number) {
@@ -7,16 +7,10 @@ function clamp(n: number, min: number, max: number) {
 }
 
 export default function ReportView({ report }: { report: ReportDocument }) {
-    // page state per ogni tabella (key = block index)
+    // pagina per tabella (key = blockIndex)
     const [pages, setPages] = useState<Record<number, number>>({});
-
-    const tableBlockIndexes = useMemo(() => {
-        const idxs: number[] = [];
-        report.blocks.forEach((b, i) => {
-            if (b.type === "table") idxs.push(i);
-        });
-        return idxs;
-    }, [report]);
+    // expanded row per tabella (key = blockIndex -> rowKey)
+    const [expanded, setExpanded] = useState<Record<number, string | null>>({});
 
     function getPage(i: number) {
         return pages[i] ?? 1;
@@ -24,6 +18,16 @@ export default function ReportView({ report }: { report: ReportDocument }) {
 
     function setPage(i: number, next: number) {
         setPages((p) => ({ ...p, [i]: next }));
+    }
+
+    function rowKey(row: ReportTableRow, fallback: string) {
+        // se la prima cella è una data, usiamola come key
+        return (row.cells?.[0] ? `k:${row.cells[0]}` : fallback);
+    }
+
+    function toggleRow(blockIndex: number, key: string, hasDetails: boolean) {
+        if (!hasDetails) return;
+        setExpanded((e) => ({ ...e, [blockIndex]: e[blockIndex] === key ? null : key }));
     }
 
     return (
@@ -46,6 +50,8 @@ export default function ReportView({ report }: { report: ReportDocument }) {
                     const end = start + pageSize;
                     const pageRows = rows.slice(start, end);
 
+                    const expandedKey = expanded[i] ?? null;
+
                     return (
                         <div key={i} className="report-table-section">
                             <div className="report-table-toolbar">
@@ -54,34 +60,10 @@ export default function ReportView({ report }: { report: ReportDocument }) {
                                 </div>
                                 {rows.length > pageSize && (
                                     <div className="report-table-pager">
-                                        <button
-                                            className="pager-btn"
-                                            onClick={() => setPage(i, 1)}
-                                            disabled={page === 1}
-                                        >
-                                            «
-                                        </button>
-                                        <button
-                                            className="pager-btn"
-                                            onClick={() => setPage(i, page - 1)}
-                                            disabled={page === 1}
-                                        >
-                                            Prev
-                                        </button>
-                                        <button
-                                            className="pager-btn"
-                                            onClick={() => setPage(i, page + 1)}
-                                            disabled={page === totalPages}
-                                        >
-                                            Next
-                                        </button>
-                                        <button
-                                            className="pager-btn"
-                                            onClick={() => setPage(i, totalPages)}
-                                            disabled={page === totalPages}
-                                        >
-                                            »
-                                        </button>
+                                        <button className="pager-btn" onClick={() => setPage(i, 1)} disabled={page === 1}>«</button>
+                                        <button className="pager-btn" onClick={() => setPage(i, page - 1)} disabled={page === 1}>Prev</button>
+                                        <button className="pager-btn" onClick={() => setPage(i, page + 1)} disabled={page === totalPages}>Next</button>
+                                        <button className="pager-btn" onClick={() => setPage(i, totalPages)} disabled={page === totalPages}>»</button>
                                     </div>
                                 )}
                             </div>
@@ -96,11 +78,53 @@ export default function ReportView({ report }: { report: ReportDocument }) {
                                         </thead>
                                     )}
                                     <tbody>
-                                        {pageRows.map((row, ri) => (
-                                            <tr key={ri}>
-                                                {row.map((cell, ci) => <td key={ci}>{cell}</td>)}
-                                            </tr>
-                                        ))}
+                                        {pageRows.map((row, ri) => {
+                                            const key = rowKey(row, `row:${start + ri}`);
+                                            const hasDetails = !!row.details && row.details.rows?.length > 0;
+                                            const isOpen = expandedKey === key;
+
+                                            return (
+                                                <>
+                                                    <tr
+                                                        key={key}
+                                                        className={hasDetails ? "expandable-row" : undefined}
+                                                        onClick={() => toggleRow(i, key, hasDetails)}
+                                                        title={hasDetails ? "Clicca per espandere/chiudere il dettaglio" : undefined}
+                                                    >
+                                                        {row.cells.map((cell, ci) => <td key={ci}>{cell}</td>)}
+                                                    </tr>
+
+                                                    {hasDetails && isOpen && (
+                                                        <tr key={`${key}-details`}>
+                                                            <td colSpan={headers?.length ?? row.cells.length}>
+                                                                <div className="details-box">
+                                                                    {row.details?.title && <div className="details-title">{row.details.title}</div>}
+                                                                    <div className="details-table-wrap">
+                                                                        <table className="details-table">
+                                                                            {row.details?.headers && (
+                                                                                <thead>
+                                                                                    <tr>
+                                                                                        {row.details.headers.map((h, hi) => <th key={hi}>{h}</th>)}
+                                                                                    </tr>
+                                                                                </thead>
+                                                                            )}
+                                                                            <tbody>
+                                                                                {row.details?.rows.map((dr, di) => (
+                                                                                    <tr key={di}>
+                                                                                        {dr.map((dc, dci) => <td key={dci}>{dc}</td>)}
+                                                                                    </tr>
+                                                                                ))}
+                                                                            </tbody>
+                                                                        </table>
+                                                                    </div>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    )}
+                                                </>
+                                            );
+                                        })}
+
                                         {pageRows.length === 0 && (
                                             <tr>
                                                 <td colSpan={headers?.length ?? 2}>Nessun dato disponibile.</td>

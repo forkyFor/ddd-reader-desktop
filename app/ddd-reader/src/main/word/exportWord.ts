@@ -9,17 +9,17 @@ import {
     TableRow,
     TableCell,
 } from "docx";
-import type { ReportDocument, ReportBlock } from "../../shared/reportModel";
+import type { ReportDocument, ReportBlock, ReportTableRow } from "../../shared/reportModel";
 
-function docxTable(block: Extract<ReportBlock, { type: "table" }>) {
-    const rows = block.rows?.length ? block.rows : [["Info", "Nessun dato disponibile"]];
+function makeTable(headers: string[] | undefined, rows: string[][]) {
+    const safeRows = rows?.length ? rows : [["Info", "Nessun dato disponibile"]];
 
     const tableRows: TableRow[] = [];
 
-    if (block.headers && block.headers.length) {
+    if (headers && headers.length) {
         tableRows.push(
             new TableRow({
-                children: block.headers.map(
+                children: headers.map(
                     (h) =>
                         new TableCell({
                             children: [
@@ -33,7 +33,7 @@ function docxTable(block: Extract<ReportBlock, { type: "table" }>) {
         );
     }
 
-    for (const r of rows) {
+    for (const r of safeRows) {
         tableRows.push(
             new TableRow({
                 children: r.map(
@@ -55,14 +55,35 @@ export async function exportReportToWord(report: ReportDocument, outPath: string
     for (const b of report.blocks) {
         if (b.type === "title") {
             children.push(new Paragraph({ text: b.text, heading: HeadingLevel.TITLE }));
-        } else if (b.type === "h1") {
+            continue;
+        }
+        if (b.type === "h1") {
             children.push(new Paragraph({ text: b.text, heading: HeadingLevel.HEADING_1 }));
-        } else if (b.type === "h2") {
+            continue;
+        }
+        if (b.type === "h2") {
             children.push(new Paragraph({ text: b.text, heading: HeadingLevel.HEADING_2 }));
-        } else if (b.type === "p") {
+            continue;
+        }
+        if (b.type === "p") {
             children.push(new Paragraph({ text: b.text }));
-        } else if (b.type === "table") {
-            children.push(docxTable(b));
+            continue;
+        }
+
+        if (b.type === "table") {
+            // tabella principale (riassunto)
+            const mainRows = (b.rows ?? []).map((r: ReportTableRow) => r.cells ?? []);
+            children.push(makeTable(b.headers, mainRows));
+
+            // dettagli: in Word li stampiamo sotto come tabelle separate
+            const withDetails = (b.rows ?? []).filter((r) => r.details && r.details.rows?.length);
+            for (const r of withDetails) {
+                const dt = r.details!;
+                if (dt.title) {
+                    children.push(new Paragraph({ text: dt.title, heading: HeadingLevel.HEADING_3 }));
+                }
+                children.push(makeTable(dt.headers, dt.rows));
+            }
         }
     }
 
