@@ -1,15 +1,47 @@
 import fs from "node:fs/promises";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell } from "docx";
 
-function kvTable(rows: Array<[string, string]>) {
-    const tableRows = rows.map(([k, v]) =>
+function safeText(v: any, maxLen = 2000) {
+    if (v === null || v === undefined) return "";
+    let s = "";
+
+    if (typeof v === "string") s = v;
+    else if (typeof v === "number" || typeof v === "boolean") s = String(v);
+    else {
+        // oggetti/array: serializza ma evita dimensioni enormi
+        try {
+            s = JSON.stringify(v);
+        } catch {
+            s = String(v);
+        }
+    }
+
+    if (s.length > maxLen) s = s.slice(0, maxLen) + "…";
+    return s;
+}
+
+function kvTable(rows: Array<[string, any]>) {
+    const safeRows = (rows && rows.length > 0)
+        ? rows
+        : [["Info", "Nessun dato disponibile"]];
+
+    const tableRows = safeRows.map(([k, v]) =>
         new TableRow({
             children: [
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: k, bold: true })] })] }),
-                new TableCell({ children: [new Paragraph(String(v ?? ""))] })
-            ]
+                new TableCell({
+                    children: [
+                        new Paragraph({
+                            children: [new TextRun({ text: safeText(k), bold: true })],
+                        }),
+                    ],
+                }),
+                new TableCell({
+                    children: [new Paragraph(safeText(v))],
+                }),
+            ],
         })
     );
+
     return new Table({ rows: tableRows });
 }
 

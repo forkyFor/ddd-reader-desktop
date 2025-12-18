@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import ReactJson from "react-json-view";
+import JsonView from "@uiw/react-json-view";
+import { darkTheme } from "@uiw/react-json-view/dark";
 
 export default function App() {
   const [dddPath, setDddPath] = useState<string | null>(null);
@@ -68,13 +69,7 @@ export default function App() {
 
       {data && (
         <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
-          <ReactJson
-            src={data}
-            name={null}
-            collapsed={2}
-            enableClipboard={true}
-            displayDataTypes={false}
-          />
+          <JsonView value={data} style={darkTheme} />
         </div>
       )}
     </div>

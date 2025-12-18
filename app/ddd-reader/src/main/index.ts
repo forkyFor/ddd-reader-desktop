@@ -1,26 +1,35 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { exportJsonToWord } from "./word/exportWord";
-import { join } from 'path'
+import { join } from 'path';
+import { existsSync } from "node:fs";
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
 function createWindow(): void {
-  // Create the browser window.
+  const preloadJs = join(__dirname, "../preload/index.js");
+  const preloadMjs = join(__dirname, "../preload/index.mjs");
+  const preloadPath = existsSync(preloadJs) ? preloadJs : preloadMjs;
+
+  console.log("[main] __dirname:", __dirname);
+  console.log("[main] preloadPath:", preloadPath);
+
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    ...(process.platform === "linux" ? { icon } : {}),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
       sandbox: false
     }
-  })
+  });
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()

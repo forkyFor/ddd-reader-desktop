@@ -7,6 +7,7 @@ export default defineConfig({
   preload: {},
   renderer: {
     resolve: {
+      dedupe: ["react", "react-dom"],
       alias: {
         '@renderer': resolve('src/renderer/src')
       }
