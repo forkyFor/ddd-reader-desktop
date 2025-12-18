@@ -55,7 +55,15 @@ export default function App() {
   }
 
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
+    <div
+      style={{
+        padding: 16,
+        fontFamily: "system-ui",
+        height: "100vh",
+        overflowY: "auto",
+        boxSizing: "border-box",
+      }}
+    >
       <h2>{title}</h2>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
