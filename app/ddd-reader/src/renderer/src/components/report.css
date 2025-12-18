@@ -26,8 +26,42 @@
     line-height: 1.4;
 }
 
-.report-table-wrap {
+.report-table-section {
     margin: 8px 0 16px 0;
+}
+
+.report-table-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin: 6px 0 8px 0;
+}
+
+.report-table-meta {
+    font-size: 12px;
+    opacity: 0.85;
+}
+
+.report-table-pager {
+    display: flex;
+    gap: 6px;
+}
+
+.pager-btn {
+    padding: 6px 10px;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+}
+
+.pager-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.report-table-wrap {
     border: 1px solid #2a2a2a;
     border-radius: 8px;
     overflow: hidden;
