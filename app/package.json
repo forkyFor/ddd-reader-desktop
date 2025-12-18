@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "docx": "^9.5.1",
+    "readesm-js": "^1.0.12"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.0.12"
+  }
+}
