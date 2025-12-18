@@ -3,20 +3,14 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { spawn } from "node:child_process";
-import { exportJsonToWord } from "./word/exportWord";
-import { join } from 'path';
-import { existsSync } from "node:fs";
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import { join } from "path";
+import { electronApp, optimizer, is } from "@electron-toolkit/utils";
+import icon from "../../resources/icon.png?asset";
+
+import { buildReport } from "../shared/buildReport";
+import { exportReportToWord } from "./word/exportWord";
 
 function createWindow(): void {
-  const preloadJs = join(__dirname, "../preload/index.js");
-  const preloadMjs = join(__dirname, "../preload/index.mjs");
-  const preloadPath = existsSync(preloadJs) ? preloadJs : preloadMjs;
-
-  console.log("[main] __dirname:", __dirname);
-  console.log("[main] preloadPath:", preloadPath);
-
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
@@ -24,72 +18,52 @@ function createWindow(): void {
     autoHideMenuBar: true,
     ...(process.platform === "linux" ? { icon } : {}),
     webPreferences: {
-      preload: preloadPath,
+      preload: join(__dirname, "../preload/index.js"),
+      sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
-    }
+    },
   });
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
+  mainWindow.on("ready-to-show", () => {
+    mainWindow.show();
+  });
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
+    shell.openExternal(details.url);
+    return { action: "deny" };
+  });
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  if (is.dev && process.env["ELECTRON_RENDERER_URL"]) {
+    mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId("com.electron");
 
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
+  app.on("browser-window-created", (_, window) => {
+    optimizer.watchWindowShortcuts(window);
+  });
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  ipcMain.on("ping", () => console.log("pong"));
 
-  createWindow()
+  createWindow();
 
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
+  app.on("activate", function () {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
   }
-})
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
-
+});
 
 function getWrapperPath() {
-  // In dev: tools/ nel progetto. In prod: tools/ in resources (extraResources)
   if (app.isPackaged) return path.join(process.resourcesPath, "tools", "readesm-wrapper.mjs");
   return path.join(app.getAppPath(), "tools", "readesm-wrapper.mjs");
 }
@@ -97,7 +71,7 @@ function getWrapperPath() {
 ipcMain.handle("ddd:openFile", async () => {
   const res = await dialog.showOpenDialog({
     properties: ["openFile"],
-    filters: [{ name: "DDD files", extensions: ["ddd"] }]
+    filters: [{ name: "DDD files", extensions: ["ddd"] }],
   });
   if (res.canceled || res.filePaths.length === 0) return null;
   return res.filePaths[0];
@@ -109,10 +83,9 @@ ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
 
   const wrapper = getWrapperPath();
 
-  // Importante: usiamo Electron come Node (così non dipendiamo da Node installato sul PC)
   const child = spawn(process.execPath, [wrapper, dddPath, outJson], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    windowsHide: true
+    windowsHide: true,
   });
 
   let stderr = "";
@@ -128,18 +101,19 @@ ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
 ipcMain.handle("ddd:exportWord", async (_evt, json: any) => {
   const res = await dialog.showSaveDialog({
     filters: [{ name: "Word document", extensions: ["docx"] }],
-    defaultPath: "ddd-report.docx"
+    defaultPath: "ddd-report.docx",
   });
   if (res.canceled || !res.filePath) return null;
 
-  await exportJsonToWord(json, res.filePath);
+  const report = buildReport(json);
+  await exportReportToWord(report, res.filePath);
   return res.filePath;
 });
 
 ipcMain.handle("ddd:exportJson", async (_evt, json: any) => {
   const res = await dialog.showSaveDialog({
     filters: [{ name: "JSON", extensions: ["json"] }],
-    defaultPath: "ddd-output.json"
+    defaultPath: "ddd-output.json",
   });
   if (res.canceled || !res.filePath) return null;
 
