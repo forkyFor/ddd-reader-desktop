@@ -1,4 +1,9 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
+import { spawn } from "node:child_process";
+import { exportJsonToWord } from "./word/exportWord";
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -72,3 +77,63 @@ app.on('window-all-closed', () => {
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
+
+
+function getWrapperPath() {
+  // In dev: tools/ nel progetto. In prod: tools/ in resources (extraResources)
+  if (app.isPackaged) return path.join(process.resourcesPath, "tools", "readesm-wrapper.mjs");
+  return path.join(app.getAppPath(), "tools", "readesm-wrapper.mjs");
+}
+
+ipcMain.handle("ddd:openFile", async () => {
+  const res = await dialog.showOpenDialog({
+    properties: ["openFile"],
+    filters: [{ name: "DDD files", extensions: ["ddd"] }]
+  });
+  if (res.canceled || res.filePaths.length === 0) return null;
+  return res.filePaths[0];
+});
+
+ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ddd-reader-"));
+  const outJson = path.join(tmpDir, "output.json");
+
+  const wrapper = getWrapperPath();
+
+  // Importante: usiamo Electron come Node (così non dipendiamo da Node installato sul PC)
+  const child = spawn(process.execPath, [wrapper, dddPath, outJson], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    windowsHide: true
+  });
+
+  let stderr = "";
+  child.stderr?.on("data", (d) => (stderr += d.toString()));
+
+  const code: number = await new Promise((resolve) => child.on("close", resolve));
+  if (code !== 0) throw new Error(stderr || `Parser process exited with code ${code}`);
+
+  const raw = await fs.readFile(outJson, "utf-8");
+  return JSON.parse(raw);
+});
+
+ipcMain.handle("ddd:exportWord", async (_evt, json: any) => {
+  const res = await dialog.showSaveDialog({
+    filters: [{ name: "Word document", extensions: ["docx"] }],
+    defaultPath: "ddd-report.docx"
+  });
+  if (res.canceled || !res.filePath) return null;
+
+  await exportJsonToWord(json, res.filePath);
+  return res.filePath;
+});
+
+ipcMain.handle("ddd:exportJson", async (_evt, json: any) => {
+  const res = await dialog.showSaveDialog({
+    filters: [{ name: "JSON", extensions: ["json"] }],
+    defaultPath: "ddd-output.json"
+  });
+  if (res.canceled || !res.filePath) return null;
+
+  await fs.writeFile(res.filePath, JSON.stringify(json, null, 2), "utf-8");
+  return res.filePath;
+});

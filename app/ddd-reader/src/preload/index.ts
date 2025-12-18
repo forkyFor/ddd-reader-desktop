@@ -1,5 +1,5 @@
-import { contextBridge } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
+import { contextBridge, ipcRenderer } from "electron";
+import { electronAPI } from '@electron-toolkit/preload';
 
 // Custom APIs for renderer
 const api = {}
@@ -20,3 +20,10 @@ if (process.contextIsolated) {
   // @ts-ignore (define in dts)
   window.api = api
 }
+
+contextBridge.exposeInMainWorld("api", {
+  openDddFile: () => ipcRenderer.invoke("ddd:openFile"),
+  parseDdd: (dddPath: string) => ipcRenderer.invoke("ddd:parse", dddPath),
+  exportWord: (json: any) => ipcRenderer.invoke("ddd:exportWord", json),
+  exportJson: (json: any) => ipcRenderer.invoke("ddd:exportJson", json)
+});

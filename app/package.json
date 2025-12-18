@@ -1,9 +1,11 @@
 {
   "dependencies": {
     "docx": "^9.5.1",
+    "react-json-view": "^1.21.3",
     "readesm-js": "^1.0.12"
   },
   "devDependencies": {
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0"
   }
 }
