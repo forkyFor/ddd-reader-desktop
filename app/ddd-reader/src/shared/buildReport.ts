@@ -9,6 +9,20 @@ const s = (v: any, max = 2000) => {
     return out;
 };
 
+function parseKm(v: any): number | null {
+    if (v === null || v === undefined) return null;
+    if (typeof v === "number") return v;
+
+    const str = String(v).trim();
+    // es: "0 km", "9 km", "12.5 km", "12,5 km"
+    const m = str.match(/-?\d+(?:[.,]\d+)?/);
+    if (!m) return null;
+
+    const n = Number(m[0].replace(",", "."));
+    return Number.isFinite(n) ? n : null;
+}
+
+
 function toTimeMs(v: any): number | null {
     if (!v) return null;
     if (typeof v === "string") {
@@ -335,14 +349,21 @@ function buildReportFromReadEsm(json: any): ReportDocument {
     if (dayKeys.length === 0) {
         blocks.push({ type: "p", text: "Nessuna attività giornaliera disponibile." });
     } else {
-        const sortedDays = [...dayKeys].sort((a, b) => {
-            const ta = toTimeMs(a);
-            const tb = toTimeMs(b);
-            if (ta === null && tb === null) return 0;
-            if (ta === null) return 1;
-            if (tb === null) return -1;
-            return tb - ta;
-        });
+        const sortedDays = [...dayKeys]
+            // rimuovi giorni con 0 km
+            .filter((d) => {
+                const rec = dailyRecordsObj[d];
+                const km = parseKm(rec?.activityDayDistance);
+                return km === null ? true : km !== 0;
+            })
+            .sort((a, b) => {
+                const ta = toTimeMs(a);
+                const tb = toTimeMs(b);
+                if (ta === null && tb === null) return 0;
+                if (ta === null) return 1;
+                if (tb === null) return -1;
+                return tb - ta;
+            });
 
         const rows: ReportTableRow[] = sortedDays.map((d) => {
             const rec = dailyRecordsObj[d];
