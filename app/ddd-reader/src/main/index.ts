@@ -200,54 +200,90 @@ async function parseWithDddParserExe(dddPath: string, mode: "-card" | "-vu") {
 // IPC: Parse (chain A -> B)
 // ----------------------
 
-ipcMain.handle("ddd:parse", async (_evt, payload: any) => {
-  const dddPath: string | undefined =
-    typeof payload === "string" ? payload : payload?.dddPath;
+ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
+  const start = Date.now();
+  console.log("[ddd:parse] start", { dddPath });
 
-  if (!dddPath || typeof dddPath !== "string") {
-    throw new Error("ddd:parse: dddPath mancante o non valido (atteso string).");
-  }
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ddd-reader-"));
+  const outJson = path.join(tmpDir, "output.json");
 
-  // progress start
-  mainWindow?.webContents.send("ddd:parseProgress", { percent: 0, stage: "Parsing in corso..." });
+  // Wrapper path inline (dev vs packaged)
+  const wrapper = app.isPackaged
+    ? path.join(process.resourcesPath, "tools", "readesm-wrapper.mjs")
+    : path.join(app.getAppPath(), "tools", "readesm-wrapper.mjs");
 
+  console.log("[ddd:parse] wrapper", wrapper);
+  console.log("[ddd:parse] outJson", outJson);
+
+  // Optional: check wrapper exists
   try {
-    const json = await parseWithReadEsm(dddPath);
-
-    // Se readesm produce un errore strutturato (come nel tuo esempio)
-    if (json?.BlockParseError) {
-      const mode = guessDddTypeForFallback(json.BlockParseError, dddPath);
-      const fallback = await parseWithDddParserExe(dddPath, mode);
-
-      return {
-        title: json?.title ?? "Esm data",
-        parserUsed: "fallback-dddparser",
-        primaryError: json.BlockParseError,
-        data: fallback
-      };
-    }
-
-    return {
-      title: json?.title ?? "Esm data",
-      parserUsed: "readesm-js",
-      data: json
-    };
+    await fs.stat(wrapper);
   } catch (e: any) {
-    // readesm crash → fallback
-    const mode = guessDddTypeForFallback(e, dddPath);
-    const fallback = await parseWithDddParserExe(dddPath, mode);
-
-    return {
-      title: "Esm data",
-      parserUsed: "fallback-dddparser",
-      primaryError: { errorMessage: e?.message ?? String(e) },
-      data: fallback
-    };
-  } finally {
-    // hide progress overlay after a short moment (renderer decides)
-    mainWindow?.webContents.send("ddd:parseProgress", { percent: 100, stage: "Fine." });
+    console.log("[ddd:parse] wrapper missing", e?.message ?? e);
+    throw new Error(`Wrapper non trovato: ${wrapper}`);
   }
+
+  const child = spawn(process.execPath, [wrapper, dddPath, outJson], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    windowsHide: true,
+  });
+
+  child.on("spawn", () => console.log("[ddd:parse] spawned pid=", child.pid));
+  child.on("error", (e) => console.log("[ddd:parse] spawn error", e));
+
+  let stderr = "";
+  let stdout = "";
+
+  child.stdout?.on("data", (d) => {
+    const t = d.toString();
+    stdout += t;
+    console.log("[ddd:parse][stdout]", t.trim().slice(0, 500));
+  });
+
+  child.stderr?.on("data", (d) => {
+    const t = d.toString();
+    stderr += t;
+    console.log("[ddd:parse][stderr]", t.trim().slice(0, 500));
+  });
+
+  // HARD TIMEOUT
+  const TIMEOUT_MS = 6 * 60 * 1000;
+  const timeout = setTimeout(() => {
+    console.log("[ddd:parse] TIMEOUT -> killing child pid=", child.pid);
+    try {
+      child.kill();
+    } catch { }
+  }, TIMEOUT_MS);
+
+  const code: number = await new Promise((resolve) => child.on("close", resolve));
+  clearTimeout(timeout);
+
+  console.log("[ddd:parse] exited", { code, ms: Date.now() - start });
+
+  if (code !== 0) {
+    const msg = stderr || stdout || `Parser process exited with code ${code}`;
+    console.log("[ddd:parse] failed:", msg.slice(0, 2000));
+    throw new Error(msg);
+  }
+
+  // Ensure output exists
+  try {
+    await fs.stat(outJson);
+  } catch (e: any) {
+    console.log("[ddd:parse] output missing", e?.message ?? e);
+    throw new Error("Output JSON non generato dal parser (output.json mancante).");
+  }
+
+  const raw = await fs.readFile(outJson, "utf-8");
+  console.log("[ddd:parse] output.json size=", raw.length);
+
+  const parsed = JSON.parse(raw);
+  console.log("[ddd:parse] success, keys=", Object.keys(parsed ?? {}).slice(0, 30));
+
+  return parsed;
 });
+
+
 
 // ----------------------
 // Export Word

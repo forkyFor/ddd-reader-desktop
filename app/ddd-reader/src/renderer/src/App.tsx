@@ -3,7 +3,7 @@ import ReportView from "./components/ReportView";
 import { buildReport } from "../../shared/buildReport";
 import type { ReportDocument } from "../../shared/reportModel";
 
-function LoadingOverlay({ text }: { text?: string }) {
+function LoadingOverlay({ text, seconds }: { text?: string; seconds?: number }) {
   return (
     <div
       style={{
@@ -32,7 +32,6 @@ function LoadingOverlay({ text }: { text?: string }) {
           {text ?? "Parsing in corso..."}
         </div>
 
-        {/* barra indeterminata */}
         <div
           style={{
             height: 10,
@@ -53,10 +52,9 @@ function LoadingOverlay({ text }: { text?: string }) {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          Non chiudere l’app finché il parsing non è completato.
+          Tempo trascorso: {seconds ?? 0}s
         </div>
 
-        {/* keyframes inline */}
         <style>
           {`
             @keyframes dddLoading {
@@ -71,12 +69,14 @@ function LoadingOverlay({ text }: { text?: string }) {
   );
 }
 
+
 export default function App() {
   const [dddPath, setDddPath] = useState<string | null>(null);
   const [parsed, setParsed] = useState<any>(null);
   const [doc, setDoc] = useState<ReportDocument | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
   const title = useMemo(() => "DDD Reader", []);
 
@@ -92,7 +92,13 @@ export default function App() {
   async function onParse() {
     if (!dddPath) return;
     setErr(null);
+    setElapsed(0);
     setLoading(true);
+    const t0 = Date.now();
+    const interval = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - t0) / 1000));
+    }, 500);
+
     try {
       const json = await window.api.parseDdd(dddPath);
       setParsed(json);
@@ -100,6 +106,7 @@ export default function App() {
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {
+      window.clearInterval(interval);
       setLoading(false);
     }
   }
@@ -132,8 +139,7 @@ export default function App() {
 
   return (
     <div style={{ padding: 16, fontFamily: "system-ui", height: "100vh", overflow: "auto" }}>
-      {loading && <LoadingOverlay text="Parsing del file .ddd in corso..." />}
-
+      {loading && <LoadingOverlay text="Parsing del file .ddd in corso..." seconds={elapsed} />}
       <h2 style={{ marginTop: 0 }}>{title}</h2>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
