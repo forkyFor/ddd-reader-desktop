@@ -3,9 +3,15 @@ import { electronAPI } from "@electron-toolkit/preload";
 
 const api = {
   openDddFile: () => ipcRenderer.invoke("ddd:openFile"),
-  parseDdd: (dddPath: string) => ipcRenderer.invoke("ddd:parse", dddPath),
+  parseDdd: (dddPath: string, parseId: string) => ipcRenderer.invoke("ddd:parse", { dddPath, parseId }),
   exportWord: (json: any) => ipcRenderer.invoke("ddd:exportWord", json),
   exportJson: (json: any) => ipcRenderer.invoke("ddd:exportJson", json),
+
+  onParseProgress: (cb: (data: { parseId: string; percent: number; stage: string }) => void) => {
+    const handler = (_: any, data: any) => cb(data);
+    ipcRenderer.on("ddd:parseProgress", handler);
+    return () => ipcRenderer.removeListener("ddd:parseProgress", handler);
+  }
 };
 
 console.log("[preload] loaded");

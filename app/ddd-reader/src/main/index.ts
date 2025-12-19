@@ -7,11 +7,12 @@ import { join } from "path";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import icon from "../../resources/icon.png?asset";
 
+let mainWindow: BrowserWindow | null = null;
 import { buildReport } from "../shared/buildReport";
 import { exportReportToWord } from "./word/exportWord";
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  const mainWindowLocal = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
@@ -24,6 +25,8 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   });
+
+  mainWindow = mainWindowLocal;
 
   mainWindow.on("ready-to-show", () => {
     mainWindow.show();
@@ -77,24 +80,66 @@ ipcMain.handle("ddd:openFile", async () => {
   return res.filePaths[0];
 });
 
-ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
+ipcMain.handle("ddd:parse", async (_evt, payload: any) => {
+  // Compatibilità: accetta sia vecchio formato (string) che nuovo ({ dddPath, parseId })
+  const dddPath: string | undefined =
+    typeof payload === "string" ? payload : payload?.dddPath;
+
+  const parseId: string =
+    typeof payload === "object" && payload?.parseId
+      ? String(payload.parseId)
+      : `legacy-${Date.now()}`;
+
+  if (!dddPath) {
+    throw new Error("ddd:parse chiamato senza dddPath. Verifica preload/App.tsx e riavvia Electron.");
+  }
+
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ddd-reader-"));
   const outJson = path.join(tmpDir, "output.json");
-
   const wrapper = getWrapperPath();
+
+  const sendProgress = (percent: number, stage: string) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("ddd:parseProgress", { parseId, percent, stage });
+    }
+  };
+
+  sendProgress(0, "Avvio...");
 
   const child = spawn(process.execPath, [wrapper, dddPath, outJson], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    windowsHide: true,
+    windowsHide: true
   });
 
   let stderr = "";
+
   child.stderr?.on("data", (d) => (stderr += d.toString()));
+
+  let stdoutBuf = "";
+  child.stdout?.on("data", (d) => {
+    stdoutBuf += d.toString();
+    const lines = stdoutBuf.split(/\r?\n/);
+    stdoutBuf = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg?.type === "progress") {
+          sendProgress(Number(msg.percent) || 0, String(msg.stage || ""));
+        }
+      } catch {
+        // ignora linee non JSON
+      }
+    }
+  });
 
   const code: number = await new Promise((resolve) => child.on("close", resolve));
   if (code !== 0) throw new Error(stderr || `Parser process exited with code ${code}`);
 
   const raw = await fs.readFile(outJson, "utf-8");
+
+  sendProgress(100, "Completato");
   return JSON.parse(raw);
 });
 
