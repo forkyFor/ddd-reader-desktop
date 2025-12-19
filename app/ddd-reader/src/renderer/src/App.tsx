@@ -3,6 +3,74 @@ import ReportView from "./components/ReportView";
 import { buildReport } from "../../shared/buildReport";
 import type { ReportDocument } from "../../shared/reportModel";
 
+function LoadingOverlay({ text }: { text?: string }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.75)",
+        backdropFilter: "blur(6px)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <div
+        style={{
+          width: "min(560px, 90vw)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          borderRadius: 14,
+          padding: 18,
+          background: "rgba(255,255,255,0.06)",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+        }}
+      >
+        <div style={{ fontSize: 14, opacity: 0.9, marginBottom: 10 }}>
+          {text ?? "Parsing in corso..."}
+        </div>
+
+        {/* barra indeterminata */}
+        <div
+          style={{
+            height: 10,
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.12)",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: "40%",
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.55)",
+              animation: "dddLoading 1.2s infinite ease-in-out",
+            }}
+          />
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+          Non chiudere l’app finché il parsing non è completato.
+        </div>
+
+        {/* keyframes inline */}
+        <style>
+          {`
+            @keyframes dddLoading {
+              0% { transform: translateX(-120%); }
+              50% { transform: translateX(80%); }
+              100% { transform: translateX(220%); }
+            }
+          `}
+        </style>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [dddPath, setDddPath] = useState<string | null>(null);
   const [parsed, setParsed] = useState<any>(null);
@@ -39,34 +107,48 @@ export default function App() {
   async function onExportWord() {
     if (!parsed) return;
     setErr(null);
+    setLoading(true);
     try {
       await window.api.exportWord(parsed);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
     }
   }
 
   async function onExportJson() {
     if (!parsed) return;
     setErr(null);
+    setLoading(true);
     try {
       await window.api.exportJson(parsed);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
     <div style={{ padding: 16, fontFamily: "system-ui", height: "100vh", overflow: "auto" }}>
+      {loading && <LoadingOverlay text="Parsing del file .ddd in corso..." />}
+
       <h2 style={{ marginTop: 0 }}>{title}</h2>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <button onClick={onOpen}>Seleziona .ddd</button>
-        <button onClick={onParse} disabled={!dddPath || loading}>
-          {loading ? "Parsing..." : "Parse"}
+        <button onClick={onOpen} disabled={loading}>
+          Seleziona .ddd
         </button>
-        <button onClick={onExportWord} disabled={!parsed}>Export Word</button>
-        <button onClick={onExportJson} disabled={!parsed}>Export JSON</button>
+        <button onClick={onParse} disabled={!dddPath || loading}>
+          Parse
+        </button>
+        <button onClick={onExportWord} disabled={!parsed || loading}>
+          Export Word
+        </button>
+        <button onClick={onExportJson} disabled={!parsed || loading}>
+          Export JSON
+        </button>
       </div>
 
       {dddPath && <div style={{ marginBottom: 12, fontSize: 13 }}>File: {dddPath}</div>}
