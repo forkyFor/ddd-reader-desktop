@@ -47,13 +47,97 @@ function kvRows(obj: Array<[string, any]>): string[][] {
 }
 
 function strTable(rows: string[][], pageSize = PAGE_SIZE_DEFAULT): { rows: ReportTableRow[]; pageSize: number } {
+    return { pageSize, rows: rows.map((r) => ({ cells: r.map((x) => s(x)) })) };
+}
+
+/* ---------------------------
+   DETECTION + NORMALIZATION
+---------------------------- */
+
+function unwrapIfNeeded(input: any): any {
+    // support wrapper { parserUsed, data, ... }
+    if (input && typeof input === "object" && "data" in input && (input.parserUsed || input.primaryError)) {
+        return input.data;
+    }
+    return input;
+}
+
+function isReadEsmShape(j: any): boolean {
+    return !!(j?.CardIccIdentification || j?.CardChipIdentification || j?.DriverCardApplicationIdentification);
+}
+
+function isDddParserShape(j: any): boolean {
+    return !!(j?.card_icc_identification_1 || j?.card_icc_identification_2 || j?.card_identification_and_driver_card_holder_identification_1);
+}
+
+function pickBlock(root: any, base: string) {
+    if (!root || typeof root !== "object") return null;
+    return root[`${base}_2`] ?? root[`${base}_1`] ?? root[base] ?? null;
+}
+
+function buildVehicleRegistrationTitle(v: any): string {
+    if (!v || typeof v !== "object") return "";
+    const nation = v.vehicle_registration_nation ?? v.vehicleRegistrationNation ?? v.nation;
+    const num = v.vehicle_registration_number ?? v.vehicleRegistrationNumber ?? v.number;
+    return [nation, num].filter(Boolean).join(" ");
+}
+
+function birthDateTitle(bd: any): string {
+    if (!bd || typeof bd !== "object") return "";
+    const y = bd.year ?? "";
+    const m = bd.month ?? "";
+    const d = bd.day ?? "";
+    const parts = [y, m, d].filter((x) => x !== "").map((x) => String(x).padStart(2, "0"));
+    if (parts.length === 3) return `${parts[0]}-${parts[1]}-${parts[2]}`;
+    return parts.join("-");
+}
+
+function flattenMaybeArrayOfRecords(container: any, key: string): any[] {
+    const v = container?.[key];
+    if (!Array.isArray(v)) return [];
+    const out: any[] = [];
+    for (const item of v) {
+        if (!item) continue;
+        const er = (item as any).card_event_records;
+        if (er) {
+            if (Array.isArray(er)) out.push(...er);
+            else if (Array.isArray((er as any).records)) out.push(...(er as any).records);
+            else out.push(er);
+        }
+        const fr = (item as any).card_fault_records;
+        if (fr) {
+            if (Array.isArray(fr)) out.push(...fr);
+            else if (Array.isArray((fr as any).records)) out.push(...(fr as any).records);
+            else out.push(fr);
+        }
+    }
+    return out;
+}
+
+/* ---------------------------
+   PUBLIC API
+---------------------------- */
+
+export function buildReport(input: any): ReportDocument {
+    const json = unwrapIfNeeded(input);
+
+    if (isReadEsmShape(json)) return buildReportFromReadEsm(json);
+    if (isDddParserShape(json)) return buildReportFromDddParser(json);
+
+    // fallback minimale: se non riconosciuto
     return {
-        pageSize,
-        rows: rows.map((r) => ({ cells: r.map((x) => s(x)) })),
+        blocks: [
+            { type: "title", text: "DDD Report" },
+            { type: "p", text: "Formato non riconosciuto per la formattazione a report. Mostra JSON grezzo finché non mappiamo questo tipo." }
+        ]
     };
 }
 
-export function buildReport(json: any): ReportDocument {
+/* ---------------------------
+   READESM (PRIMO PLUGIN)
+---------------------------- */
+
+function buildReportFromReadEsm(json: any): ReportDocument {
     const blocks: ReportDocument["blocks"] = [];
     blocks.push({ type: "title", text: "DDD Report" });
 
@@ -62,6 +146,7 @@ export function buildReport(json: any): ReportDocument {
     blocks.push({
         type: "table",
         pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
         ...strTable(
             kvRows([
                 ["Clock stop", json?.CardIccIdentification?.clockStop],
@@ -80,6 +165,7 @@ export function buildReport(json: any): ReportDocument {
     blocks.push({
         type: "table",
         pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
         ...strTable(
             kvRows([
                 ["Chip serial number", json?.CardChipIdentification?.chipSerialNumber],
@@ -94,6 +180,7 @@ export function buildReport(json: any): ReportDocument {
     blocks.push({
         type: "table",
         pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
         ...strTable(
             kvRows([
                 ["Type of tachograph card", json?.DriverCardApplicationIdentification?.typeOfTachographCardId],
@@ -109,6 +196,7 @@ export function buildReport(json: any): ReportDocument {
     blocks.push({
         type: "table",
         pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
         ...strTable(
             kvRows([
                 ["Card number", id?.cardNumber],
@@ -128,6 +216,7 @@ export function buildReport(json: any): ReportDocument {
     blocks.push({
         type: "table",
         pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
         ...strTable(
             kvRows([
                 ["Session open time", json?.CardCurrentUse?.sessionOpenTime],
@@ -141,6 +230,7 @@ export function buildReport(json: any): ReportDocument {
     blocks.push({
         type: "table",
         pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
         ...strTable(kvRows([["Last download", json?.LastCardDownload?.lastCardDownload]])),
     });
 
@@ -149,6 +239,7 @@ export function buildReport(json: any): ReportDocument {
     blocks.push({
         type: "table",
         pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
         ...strTable(
             kvRows([
                 ["Driving license issuing authority", json?.CardDrivingLicenseInformation?.drivingLicenseIssuingAuthority],
@@ -158,36 +249,14 @@ export function buildReport(json: any): ReportDocument {
         ),
     });
 
-    // --- Control activity
-    blocks.push({ type: "h1", text: "Control Activity Data Record" });
-    blocks.push({
-        type: "table",
-        pageSize: PAGE_SIZE_DEFAULT,
-        ...strTable(
-            kvRows([
-                ["Control type", json?.CardControlActivityDataRecord?.controlType],
-                ["Control time", json?.CardControlActivityDataRecord?.controlTime],
-                ["Control card number", json?.CardControlActivityDataRecord?.controlCardNumber],
-                ["Control vehicle registration", json?.CardControlActivityDataRecord?.controlVehicleRegistration?.title],
-                ["Control download period", json?.CardControlActivityDataRecord?.controlDownloadPeriod?.title],
-            ])
-        ),
-    });
-
     // --- Events
-    const eventRecords =
-        json?.CardEventData?.CardEventRecord?.records ??
-        json?.CardEventData?.records ??
-        [];
+    const eventRecords = json?.CardEventData?.CardEventRecord?.records ?? json?.CardEventData?.records ?? [];
     blocks.push({ type: "h1", text: "Eventi" });
     if (!Array.isArray(eventRecords) || eventRecords.length === 0) {
         blocks.push({ type: "p", text: "Nessun evento disponibile." });
     } else {
         const sortedEvents = sortByTimeDesc(eventRecords, (e: any) =>
-            toTimeMs(e?.eventTime) ??
-            toTimeMs(e?.time) ??
-            toTimeMs(extractFromIso(e?.title || "")) ??
-            null
+            toTimeMs(e?.eventTime) ?? toTimeMs(e?.time) ?? toTimeMs(extractFromIso(e?.title || "")) ?? null
         );
 
         blocks.push({
@@ -206,19 +275,13 @@ export function buildReport(json: any): ReportDocument {
     }
 
     // --- Faults
-    const faultRecords =
-        json?.CardFaultData?.CardFaultRecord?.records ??
-        json?.CardFaultData?.records ??
-        [];
+    const faultRecords = json?.CardFaultData?.CardFaultRecord?.records ?? json?.CardFaultData?.records ?? [];
     blocks.push({ type: "h1", text: "Fault" });
     if (!Array.isArray(faultRecords) || faultRecords.length === 0) {
         blocks.push({ type: "p", text: "Nessun fault disponibile." });
     } else {
         const sortedFaults = sortByTimeDesc(faultRecords, (f: any) =>
-            toTimeMs(f?.faultTime) ??
-            toTimeMs(f?.time) ??
-            toTimeMs(extractFromIso(f?.title || "")) ??
-            null
+            toTimeMs(f?.faultTime) ?? toTimeMs(f?.time) ?? toTimeMs(extractFromIso(f?.title || "")) ?? null
         );
 
         blocks.push({
@@ -231,30 +294,6 @@ export function buildReport(json: any): ReportDocument {
                     s(f?.faultType ?? f?.type ?? f?.title),
                     s(f?.faultTime ?? f?.time ?? extractFromIso(f?.title || "")),
                     s(f?.faultVehicleRegistration?.title ?? f?.vehicle ?? f?.details ?? ""),
-                ],
-            })),
-        });
-    }
-
-    // --- Places
-    const placeRecords = json?.CardPlaceDailyWorkPeriod?.PlaceRecord?.records ?? [];
-    blocks.push({ type: "h1", text: "Place Daily Work Period" });
-    if (!Array.isArray(placeRecords) || placeRecords.length === 0) {
-        blocks.push({ type: "p", text: "Nessun record disponibile." });
-    } else {
-        const sortedPlaces = sortByTimeDesc(placeRecords, (p: any) => toTimeMs(p?.entryTime));
-        blocks.push({
-            type: "table",
-            pageSize: PAGE_SIZE_DEFAULT,
-            headers: ["#", "Entry time", "Paese", "Regione", "Odometer", "Tipo"],
-            rows: sortedPlaces.map((p: any, idx: number) => ({
-                cells: [
-                    String(idx + 1),
-                    s(p?.entryTime),
-                    s(p?.dailyWorkPeriodCountry?.title ?? p?.dailyWorkPeriodCountry),
-                    s(p?.dailyWorkPeriodRegion?.title ?? p?.dailyWorkPeriodRegion),
-                    s(p?.vehicleOdometerValue),
-                    s(p?.entryTypeDailyWorkPeriod),
                 ],
             })),
         });
@@ -309,7 +348,6 @@ export function buildReport(json: any): ReportDocument {
             const rec = dailyRecordsObj[d];
             const changes = rec?.ActivityChangeInfo?.records ?? [];
 
-            // Ordina attività del giorno: più recente prima
             const sortedChanges = sortByTimeDesc(changes, (c: any) => {
                 const from = c?.from;
                 if (typeof from === "string" && /^\d{2}:\d{2}$/.test(from)) {
@@ -347,6 +385,172 @@ export function buildReport(json: any): ReportDocument {
             pageSize: PAGE_SIZE_DEFAULT,
             headers: ["Data", "Distanza (km)", "Record length", "Presence counter"],
             rows,
+        });
+    }
+
+    return { blocks };
+}
+
+/* ---------------------------
+   DDDPARSER (FALLBACK)
+---------------------------- */
+
+function buildReportFromDddParser(data: any): ReportDocument {
+    const blocks: ReportDocument["blocks"] = [];
+    blocks.push({ type: "title", text: "DDD Report" });
+
+    // Card ICC
+    const icc = pickBlock(data, "card_icc_identification");
+    blocks.push({ type: "h1", text: "Card ICC Identification" });
+    blocks.push({
+        type: "table",
+        pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
+        ...strTable(
+            kvRows([
+                ["Verified", icc?.verified],
+                ["Clock stop", icc?.clock_stop],
+                ["Card approval number", icc?.card_approval_number],
+                ["Card personaliser ID", icc?.card_personaliser_id],
+                ["IC identifier", Array.isArray(icc?.ic_identifier) ? icc.ic_identifier.join(", ") : icc?.ic_identifier],
+            ])
+        ),
+    });
+
+    // Card Chip
+    const chip = pickBlock(data, "card_chip_identification");
+    blocks.push({ type: "h1", text: "Card Chip Identification" });
+    blocks.push({
+        type: "table",
+        pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
+        ...strTable(
+            kvRows([
+                ["Verified", chip?.verified],
+                ["IC serial number", Array.isArray(chip?.ic_serial_number) ? chip.ic_serial_number.join(", ") : chip?.ic_serial_number],
+                ["IC manufacturing reference", Array.isArray(chip?.ic_manufacturing_reference) ? chip.ic_manufacturing_reference.join(", ") : chip?.ic_manufacturing_reference],
+            ])
+        ),
+    });
+
+    // Driver app id
+    const appId = pickBlock(data, "driver_card_application_identification") ?? data?.driver_card_application_identification_v2 ?? null;
+    blocks.push({ type: "h1", text: "Driver Card Application Identification" });
+    blocks.push({
+        type: "table",
+        pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
+        ...strTable(
+            kvRows([
+                ["Verified", appId?.verified],
+                ["Type of tachograph card", appId?.type_of_tachograph_card_id],
+                ["No. events per type", appId?.no_of_events_per_type],
+                ["No. faults per type", appId?.no_of_faults_per_type],
+                ["No. vehicle records", appId?.no_of_card_vehicle_records],
+                ["No. place records", appId?.no_of_card_place_records],
+            ])
+        ),
+    });
+
+    // Identification
+    const ident = pickBlock(data, "card_identification_and_driver_card_holder_identification");
+    blocks.push({ type: "h1", text: "Identificazione" });
+    const card = ident?.card_identification ?? {};
+    const holder = ident?.driver_card_holder_identification ?? {};
+    blocks.push({
+        type: "table",
+        pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
+        ...strTable(
+            kvRows([
+                ["Verified", ident?.verified],
+                ["Card number", card?.card_number],
+                ["Issuing state", card?.card_issuing_member_state],
+                ["Issuing authority", card?.card_issuing_authority_name],
+                ["Issue date", card?.card_issue_date],
+                ["Validity begin", card?.card_validity_begin],
+                ["Expiry date", card?.card_expiry_date],
+                ["Holder surname", holder?.card_holder_name?.holder_surname],
+                ["Holder first names", holder?.card_holder_name?.holder_first_names],
+                ["Holder birth date", birthDateTitle(holder?.card_holder_birth_date)],
+                ["Preferred language", holder?.card_holder_preferred_language],
+            ])
+        ),
+    });
+
+    // Current use
+    const currentUse = pickBlock(data, "card_current_use");
+    blocks.push({ type: "h1", text: "Card Current Use" });
+    blocks.push({
+        type: "table",
+        pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
+        ...strTable(
+            kvRows([
+                ["Verified", currentUse?.verified],
+                ["Session open time", currentUse?.session_open_time],
+                ["Session open vehicle", buildVehicleRegistrationTitle(currentUse?.session_open_vehicle)],
+            ])
+        ),
+    });
+
+    // Last download
+    const lastDl = pickBlock(data, "last_card_download");
+    blocks.push({ type: "h1", text: "Last Card Download" });
+    blocks.push({
+        type: "table",
+        pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
+        ...strTable(kvRows([["Verified", lastDl?.verified], ["Last download", lastDl?.last_card_download]])),
+    });
+
+    // Events (se presenti)
+    const ev = pickBlock(data, "card_event_data");
+    blocks.push({ type: "h1", text: "Eventi" });
+    const evRecords = ev ? flattenMaybeArrayOfRecords(ev, "card_event_records_array") : [];
+    if (!Array.isArray(evRecords) || evRecords.length === 0) {
+        blocks.push({ type: "p", text: "Nessun evento disponibile." });
+    } else {
+        const sortedEvents = sortByTimeDesc(evRecords, (e: any) =>
+            toTimeMs(e?.event_time ?? e?.eventTime ?? e?.time ?? extractFromIso(e?.title || "")) ?? null
+        );
+        blocks.push({
+            type: "table",
+            pageSize: PAGE_SIZE_DEFAULT,
+            headers: ["#", "Tipo", "Data/Ora", "Dettagli"],
+            rows: sortedEvents.map((e: any, idx: number) => ({
+                cells: [
+                    String(idx + 1),
+                    s(e?.event_type ?? e?.eventType ?? e?.type ?? e?.title),
+                    s(e?.event_time ?? e?.eventTime ?? e?.time ?? extractFromIso(e?.title || "")),
+                    s(e?.event_vehicle_registration ?? e?.vehicle ?? e?.details ?? ""),
+                ],
+            })),
+        });
+    }
+
+    // Faults (se presenti)
+    const ft = pickBlock(data, "card_fault_data");
+    blocks.push({ type: "h1", text: "Fault" });
+    const ftRecords = ft ? flattenMaybeArrayOfRecords(ft, "card_fault_records_array") : [];
+    if (!Array.isArray(ftRecords) || ftRecords.length === 0) {
+        blocks.push({ type: "p", text: "Nessun fault disponibile." });
+    } else {
+        const sortedFaults = sortByTimeDesc(ftRecords, (f: any) =>
+            toTimeMs(f?.fault_time ?? f?.faultTime ?? f?.time ?? extractFromIso(f?.title || "")) ?? null
+        );
+        blocks.push({
+            type: "table",
+            pageSize: PAGE_SIZE_DEFAULT,
+            headers: ["#", "Tipo", "Data/Ora", "Dettagli"],
+            rows: sortedFaults.map((f: any, idx: number) => ({
+                cells: [
+                    String(idx + 1),
+                    s(f?.fault_type ?? f?.faultType ?? f?.type ?? f?.title),
+                    s(f?.fault_time ?? f?.faultTime ?? f?.time ?? extractFromIso(f?.title || "")),
+                    s(f?.fault_vehicle_registration ?? f?.vehicle ?? f?.details ?? ""),
+                ],
+            })),
         });
     }
 
