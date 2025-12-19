@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import type { ReportTableRow } from "../../../shared/reportModel";
 
 type Props = {
@@ -14,12 +14,20 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
     const [page, setPage] = useState(1);
     const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
+    // Se cambiano le righe, resetto pagina e dettaglio aperto
+    useEffect(() => {
+        setPage(1);
+        setExpandedIndex(null);
+    }, [safeRows.length, pageSize]);
+
     const totalPages = Math.max(1, Math.ceil(safeRows.length / pageSize));
+    const needsPagination = safeRows.length > pageSize;
 
     const slice = useMemo(() => {
+        if (!needsPagination) return safeRows;
         const start = (page - 1) * pageSize;
         return safeRows.slice(start, start + pageSize);
-    }, [safeRows, page, pageSize]);
+    }, [safeRows, page, pageSize, needsPagination]);
 
     function go(p: number) {
         const next = Math.min(totalPages, Math.max(1, p));
@@ -31,6 +39,14 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
         return (
             <div style={{ padding: 12, border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10 }}>
                 Tabella non valida: headers mancanti.
+            </div>
+        );
+    }
+
+    if (safeRows.length === 0) {
+        return (
+            <div style={{ padding: 12, border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10 }}>
+                Nessun dato disponibile.
             </div>
         );
     }
@@ -60,7 +76,7 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
 
                     <tbody>
                         {slice.map((r, i) => {
-                            const globalIndex = (page - 1) * pageSize + i;
+                            const globalIndex = needsPagination ? (page - 1) * pageSize + i : i;
                             const isExpandable = !!r?.details;
                             const isOpen = expandedIndex === globalIndex;
 
@@ -97,6 +113,7 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
                                         <tr key={`${globalIndex}-details`}>
                                             <td colSpan={safeHeaders.length} style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
                                                 <div style={{ marginBottom: 10, fontSize: 13, opacity: 0.9 }}>{r.details.title}</div>
+
                                                 <div style={{ overflowX: "auto" }}>
                                                     <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
                                                         <thead>
@@ -148,23 +165,26 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
                 </table>
             </div>
 
-            <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 12px" }}>
-                <button onClick={() => go(1)} disabled={page === 1}>
-                    {"<<"}
-                </button>
-                <button onClick={() => go(page - 1)} disabled={page === 1}>
-                    {"<"}
-                </button>
-                <div style={{ fontSize: 13 }}>
-                    Pagina {page} / {totalPages} (totale righe: {safeRows.length})
+            {/* PAGINAZIONE: solo se serve */}
+            {needsPagination && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 12px" }}>
+                    <button onClick={() => go(1)} disabled={page === 1}>
+                        {"<<"}
+                    </button>
+                    <button onClick={() => go(page - 1)} disabled={page === 1}>
+                        {"<"}
+                    </button>
+                    <div style={{ fontSize: 13 }}>
+                        Pagina {page} / {totalPages} (totale righe: {safeRows.length})
+                    </div>
+                    <button onClick={() => go(page + 1)} disabled={page === totalPages}>
+                        {">"}
+                    </button>
+                    <button onClick={() => go(totalPages)} disabled={page === totalPages}>
+                        {">>"}
+                    </button>
                 </div>
-                <button onClick={() => go(page + 1)} disabled={page === totalPages}>
-                    {">"}
-                </button>
-                <button onClick={() => go(totalPages)} disabled={page === totalPages}>
-                    {">>"}
-                </button>
-            </div>
+            )}
         </div>
     );
 }
