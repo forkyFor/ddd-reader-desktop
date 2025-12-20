@@ -84,6 +84,31 @@ function isDddParserShape(j: any): boolean {
     return !!(j?.card_icc_identification_1 || j?.card_icc_identification_2 || j?.card_identification_and_driver_card_holder_identification_1);
 }
 
+function isVehicleUnitShape(j: any): boolean {
+    // Explicit type check from TachographGo (most reliable)
+    if (j?.type === 'VEHICLE_UNIT') return true;
+
+    // Has vehicleUnit structure (TachographGo format)
+    if (j?.vehicleUnit) return true;
+
+    // Check for driver card indicators first (to avoid false positives)
+    const hasDriverCardKeys = !!(
+        j?.driverCard ||
+        j?.type === 'DRIVER_CARD' ||
+        j?.CardIccIdentification ||
+        j?.CardChipIdentification ||
+        j?.DriverCardApplicationIdentification ||
+        j?.card_icc_identification_1 ||
+        j?.card_identification_and_driver_card_holder_identification_1
+    );
+
+    // If it has driver card keys, it's NOT a vehicle unit
+    if (hasDriverCardKeys) return false;
+
+    // Only then check for VU legacy keys
+    return !!(j?.vu_overview_1 || j?.vu_activities_1);
+}
+
 function pickBlock(root: any, base: string) {
     if (!root || typeof root !== "object") return null;
     return root[`${base}_2`] ?? root[`${base}_1`] ?? root[base] ?? null;
@@ -148,8 +173,12 @@ export function buildReport(input: any): ReportDocument {
         json = unwrapIfNeeded(input);
     }
 
+    // Check for DRIVER CARDS first (more common and to avoid false positives)
     if (isReadEsmShape(json)) return buildReportFromReadEsm(json);
     if (isDddParserShape(json)) return buildReportFromDddParser(json);
+
+    // Then check for VEHICLE UNITS
+    if (isVehicleUnitShape(json)) return buildReportFromVehicleUnit(json);
 
     // fallback minimale: se non riconosciuto
     return {
@@ -590,3 +619,149 @@ function buildReportFromDddParser(data: any): ReportDocument {
 
     return { blocks };
 }
+
+/* ---------------------------
+   VEHICLE UNIT (VU)
+---------------------------- */
+
+function buildReportFromVehicleUnit(data: any): ReportDocument {
+    const blocks: ReportDocument["blocks"] = [];
+    blocks.push({ type: "title", text: "Vehicle Unit (VU) Report" });
+
+    // Try to get data from either TachographGo or DDDParser format
+    const vuData = data.vehicleUnit?.gen1 || data;
+    const overview = vuData.overview || data.vu_overview_1 || {};
+
+    // --- Vehicle Information
+    blocks.push({ type: "h1", text: "Vehicle Information" });
+
+    const vin = overview.vehicleIdentificationNumber?.value ||
+        data.vu_overview_1?.vehicle_identification_number ||
+        overview.vehicle_identification_number;
+
+    const registration = overview.vehicleRegistrationWithNation ||
+        overview.vehicleRegistrationIdentification ||
+        data.vu_overview_1?.vehicle_registration_identification || {};
+
+    const regNation = registration.nation || registration.vehicle_registration_nation;
+    const regNumber = registration.number?.value ||
+        registration.vehicle_registration_number;
+
+    const currentDateTime = overview.currentDateTime ||
+        overview.current_date_time ||
+        data.vu_overview_1?.current_date_time;
+
+    const downloadPeriod = overview.downloadablePeriod ||
+        overview.vu_downloadable_period ||
+        data.vu_overview_1?.vu_downloadable_period || {};
+
+    blocks.push({
+        type: "table",
+        pageSize: PAGE_SIZE_DEFAULT,
+        headers: ["Campo", "Valore"],
+        ...strTable(
+            kvRows([
+                ["VIN (Vehicle Identification Number)", vin],
+                ["Registration Nation", regNation],
+                ["Registration Number", regNumber],
+                ["Current Date/Time", currentDateTime],
+                ["Download Period (From)", downloadPeriod.minTime || downloadPeriod.min_downloadable_time],
+                ["Download Period (To)", downloadPeriod.maxTime || downloadPeriod.max_downloadable_time],
+            ])
+        ),
+    });
+
+    // --- Company Locks (if any)
+    const companyLocks = overview.companyLocks ||
+        data.vu_overview_1?.vu_company_locks_data?.vu_company_locks_records || [];
+
+    if (Array.isArray(companyLocks) && companyLocks.length > 0) {
+        blocks.push({ type: "h1", text: "Company Locks" });
+        blocks.push({
+            type: "table",
+            pageSize: PAGE_SIZE_DEFAULT,
+            headers: ["#", "Company Name", "Lock In", "Lock Out", "Company Address"],
+            rows: companyLocks.map((lock: any, idx: number) => ({
+                cells: [
+                    String(idx + 1),
+                    s(lock.companyName?.value || lock.company_name),
+                    s(lock.lockInTime || lock.lock_in_time),
+                    s(lock.lockOutTime || lock.lock_out_time),
+                    s(lock.companyAddress?.value || lock.company_address),
+                ],
+            })),
+        });
+    }
+
+    // --- Daily Activities
+    const activities = vuData.activities || data.vu_activities_1 || [];
+
+    if (Array.isArray(activities) && activities.length > 0) {
+        blocks.push({ type: "h1", text: `Daily Activities (${activities.length} days)` });
+
+        // Sort by date descending
+        const sortedActivities = sortByTimeDesc(activities, (a: any) =>
+            toTimeMs(a?.dateOfDay || a?.time_real) ?? null
+        );
+
+        blocks.push({
+            type: "table",
+            pageSize: PAGE_SIZE_DEFAULT,
+            headers: ["Date", "Odometer (km)", "Details"],
+            rows: sortedActivities.slice(0, 100).map((activity: any) => ({
+                cells: [
+                    s(activity.dateOfDay || activity.time_real),
+                    s(activity.odometerMidnightKm || activity.odometer_value_midnight),
+                    s(`${activity.vu_activity_daily_data?.no_of_activity_changes || 0} activity changes`),
+                ],
+            })),
+        });
+
+        if (sortedActivities.length > 100) {
+            blocks.push({
+                type: "p",
+                text: `Showing first 100 of ${sortedActivities.length} daily activity records. See raw JSON for complete data.`
+            });
+        }
+    }
+
+    // --- Events and Faults
+    const eventsAndFaults = data.vu_events_and_faults_1 || [];
+
+    if (Array.isArray(eventsAndFaults) && eventsAndFaults.length > 0) {
+        blocks.push({ type: "h1", text: "Events and Faults" });
+        blocks.push({
+            type: "table",
+            pageSize: PAGE_SIZE_DEFAULT,
+            headers: ["#", "Type", "Details"],
+            rows: eventsAndFaults.map((item: any, idx: number) => ({
+                cells: [
+                    String(idx + 1),
+                    s(item.event_type || item.fault_type || "Unknown"),
+                    s(JSON.stringify(item).substring(0, 100)),
+                ],
+            })),
+        });
+    }
+
+    // --- Technical Data
+    const technicalData = data.vu_technical_data_1 || [];
+
+    if (Array.isArray(technicalData) && technicalData.length > 0) {
+        blocks.push({ type: "h1", text: "Technical Data" });
+        blocks.push({
+            type: "table",
+            pageSize: PAGE_SIZE_DEFAULT,
+            headers: ["#", "Information"],
+            rows: technicalData.map((item: any, idx: number) => ({
+                cells: [
+                    String(idx + 1),
+                    s(JSON.stringify(item, null, 2).substring(0, 200)),
+                ],
+            })),
+        });
+    }
+
+    return { blocks };
+}
+
