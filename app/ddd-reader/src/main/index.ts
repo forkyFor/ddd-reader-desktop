@@ -76,6 +76,11 @@ function getDddParserExePath() {
   return path.join(app.getAppPath(), "tools", "dddparser.exe");
 }
 
+function getTachographGoExePath() {
+  if (app.isPackaged) return path.join(process.resourcesPath, "tools", "tachograph-go.exe");
+  return path.join(app.getAppPath(), "tools", "tachograph-go.exe");
+}
+
 // ----------------------
 // IPC: Open file
 // ----------------------
@@ -196,12 +201,50 @@ async function parseWithDddParserExe(dddPath: string, mode: "-card" | "-vu") {
   }
 }
 
+async function parseWithTachographGo(dddPath: string) {
+  console.log("[parseWithTachographGo] start", dddPath);
+  const exe = getTachographGoExePath();
+  try {
+    await fs.stat(exe);
+  } catch (e) {
+    throw new Error(`TachographGo exe missing at ${exe}`);
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, ["parse", dddPath], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+
+    child.on("close", (code) => {
+      console.log("[parseWithTachographGo] closed code=", code);
+      if (code !== 0) {
+        reject(new Error(stderr || `tachograph-go exited with code ${code}`));
+      } else {
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (err: any) {
+          reject(new Error(`JSON parse error from tachograph-go: ${err.message}`));
+        }
+      }
+    });
+
+    child.on("error", reject);
+  });
+}
+
 // ----------------------
 // IPC: Parse (chain A -> B)
 // ----------------------
 
 ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
-  const start = Date.now();
+
   console.log("[ddd:parse] start", { dddPath });
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ddd-reader-"));
@@ -215,11 +258,33 @@ ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
   console.log("[ddd:parse] wrapper", wrapper);
   console.log("[ddd:parse] outJson", outJson);
 
-  // Optional: check wrapper exists
+  // Attempt 1: ReadESM (Standard)
+  try {
+    return await parseWithReadEsmInternal(dddPath, wrapper, outJson);
+  } catch (err1: any) {
+    console.error("[ddd:parse] ReadESM failed:", err1.message);
+
+    // Attempt 2: TachographGo (New)
+    try {
+      console.log("[ddd:parse] Trying TachographGo fallback...");
+      return await parseWithTachographGo(dddPath);
+    } catch (err2: any) {
+      console.error("[ddd:parse] TachographGo failed:", err2.message);
+
+      // Attempt 3: DDDParser.exe (Old Fallback)
+      console.log("[ddd:parse] Trying dddparser.exe fallback...");
+      const mode = guessDddTypeForFallback(err1, dddPath);
+      return await parseWithDddParserExe(dddPath, mode);
+    }
+  }
+});
+
+// Helper to encapsulate the ReadESM logic originally inside the handler
+async function parseWithReadEsmInternal(dddPath: string, wrapper: string, outJson: string) {
+  // Wrapper check
   try {
     await fs.stat(wrapper);
   } catch (e: any) {
-    console.log("[ddd:parse] wrapper missing", e?.message ?? e);
     throw new Error(`Wrapper non trovato: ${wrapper}`);
   }
 
@@ -228,60 +293,48 @@ ipcMain.handle("ddd:parse", async (_evt, dddPath: string) => {
     windowsHide: true,
   });
 
-  child.on("spawn", () => console.log("[ddd:parse] spawned pid=", child.pid));
-  child.on("error", (e) => console.log("[ddd:parse] spawn error", e));
-
   let stderr = "";
   let stdout = "";
 
   child.stdout?.on("data", (d) => {
     const t = d.toString();
     stdout += t;
-    console.log("[ddd:parse][stdout]", t.trim().slice(0, 500));
+    console.log("[readesm][stdout]", t.trim().slice(0, 200));
   });
 
   child.stderr?.on("data", (d) => {
     const t = d.toString();
     stderr += t;
-    console.log("[ddd:parse][stderr]", t.trim().slice(0, 500));
+    console.log("[readesm][stderr]", t.trim().slice(0, 200));
   });
 
-  // HARD TIMEOUT
   const TIMEOUT_MS = 6 * 60 * 1000;
-  const timeout = setTimeout(() => {
-    console.log("[ddd:parse] TIMEOUT -> killing child pid=", child.pid);
-    try {
+  let timer: NodeJS.Timeout | undefined;
+
+  const code = await new Promise<number>((resolve) => {
+    timer = setTimeout(() => {
+      console.log("[readesm] TIMEOUT");
       child.kill();
-    } catch { }
-  }, TIMEOUT_MS);
-
-  const code: number = await new Promise((resolve) => child.on("close", resolve));
-  clearTimeout(timeout);
-
-  console.log("[ddd:parse] exited", { code, ms: Date.now() - start });
+    }, TIMEOUT_MS);
+    child.on("close", resolve);
+  });
+  if (timer) clearTimeout(timer);
 
   if (code !== 0) {
-    const msg = stderr || stdout || `Parser process exited with code ${code}`;
-    console.log("[ddd:parse] failed:", msg.slice(0, 2000));
-    throw new Error(msg);
+    throw new Error(stderr || stdout || `ReadESM parser exited with code ${code}`);
   }
 
   // Ensure output exists
   try {
     await fs.stat(outJson);
   } catch (e: any) {
-    console.log("[ddd:parse] output missing", e?.message ?? e);
     throw new Error("Output JSON non generato dal parser (output.json mancante).");
   }
 
   const raw = await fs.readFile(outJson, "utf-8");
-  console.log("[ddd:parse] output.json size=", raw.length);
+  return JSON.parse(raw);
+}
 
-  const parsed = JSON.parse(raw);
-  console.log("[ddd:parse] success, keys=", Object.keys(parsed ?? {}).slice(0, 30));
-
-  return parsed;
-});
 
 
 
