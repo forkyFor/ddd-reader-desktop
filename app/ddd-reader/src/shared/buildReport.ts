@@ -133,7 +133,20 @@ function flattenMaybeArrayOfRecords(container: any, key: string): any[] {
 ---------------------------- */
 
 export function buildReport(input: any): ReportDocument {
-    const json = unwrapIfNeeded(input);
+    // Check if this is a merged parser output
+    let json = input;
+
+    if (input?.merged === true && input?.combinedData) {
+        // This is the new merged output from all parsers
+        console.log('[buildReport] Processing merged output from multiple parsers');
+        console.log(`[buildReport] Success: ${input.successCount}, Failures: ${input.failureCount}`);
+
+        // Use combinedData for building the report
+        json = input.combinedData;
+    } else {
+        // Backward compatibility: unwrap old wrapper structure
+        json = unwrapIfNeeded(input);
+    }
 
     if (isReadEsmShape(json)) return buildReportFromReadEsm(json);
     if (isDddParserShape(json)) return buildReportFromDddParser(json);

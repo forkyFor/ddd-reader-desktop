@@ -274,11 +274,52 @@ export class PythonDumperParser implements IDDDParser {
 // Pipeline
 // ----------------------------------------------------------------------------
 
+/**
+ * Deep merge utility function to combine multiple JSON objects
+ * Later objects override earlier ones for conflicting keys
+ */
+function deepMerge(target: any, ...sources: any[]): any {
+    if (!sources.length) return target;
+    const source = sources.shift();
+
+    if (isObject(target) && isObject(source)) {
+        for (const key in source) {
+            if (isObject(source[key])) {
+                if (!target[key]) Object.assign(target, { [key]: {} });
+                deepMerge(target[key], source[key]);
+            } else {
+                Object.assign(target, { [key]: source[key] });
+            }
+        }
+    }
+
+    return deepMerge(target, ...sources);
+}
+
+function isObject(item: any): boolean {
+    return item && typeof item === 'object' && !Array.isArray(item);
+}
+
+export interface ParserResult {
+    success: boolean;
+    data?: any;
+    error?: string;
+}
+
+export interface MergedParserOutput {
+    merged: true;
+    timestamp: string;
+    parsers: Record<string, ParserResult>;
+    combinedData: any;
+    successCount: number;
+    failureCount: number;
+}
+
 export class DDDParserPipeline {
     private parsers: IDDDParser[] = [];
 
     constructor() {
-        // Order:
+        // All available parsers:
         // 1. ReadESM (Best)
         // 2. TachographGo (Good)
         // 3. Python Dump (Fallback/Demo)
@@ -290,19 +331,67 @@ export class DDDParserPipeline {
         this.parsers.push(new DddParserExeParser());
     }
 
-    async parse(dddPath: string, onProgress?: ProgressCallback): Promise<any> {
-        const errors: string[] = [];
+    async parse(dddPath: string, onProgress?: ProgressCallback): Promise<MergedParserOutput> {
+        console.log(`[DDDParserPipeline] Running all ${this.parsers.length} parsers in parallel...`);
 
-        for (const parser of this.parsers) {
-            console.log(`[DDDParserPipeline] Trying parser: ${parser.name}`);
-            try {
-                return await parser.parse(dddPath, onProgress);
-            } catch (e: any) {
-                console.error(`[DDDParserPipeline] Parser ${parser.name} failed:`, e.message);
-                errors.push(`${parser.name}: ${e.message}`);
+        if (onProgress) onProgress({ percent: 0, stage: "Starting all parsers..." });
+
+        // Run all parsers in parallel
+        const results = await Promise.allSettled(
+            this.parsers.map(async (parser) => {
+                console.log(`[DDDParserPipeline] Starting parser: ${parser.name}`);
+                try {
+                    const data = await parser.parse(dddPath, onProgress);
+                    console.log(`[DDDParserPipeline] Parser ${parser.name} succeeded`);
+                    return { parser: parser.name, data };
+                } catch (e: any) {
+                    console.error(`[DDDParserPipeline] Parser ${parser.name} failed:`, e.message);
+                    throw { parser: parser.name, error: e.message };
+                }
+            })
+        );
+
+        // Process results
+        const parserResults: Record<string, ParserResult> = {};
+        const successfulData: any[] = [];
+        let successCount = 0;
+        let failureCount = 0;
+
+        for (const result of results) {
+            if (result.status === 'fulfilled') {
+                const { parser, data } = result.value;
+                parserResults[parser] = {
+                    success: true,
+                    data
+                };
+                successfulData.push(data);
+                successCount++;
+            } else {
+                const { parser, error } = result.reason;
+                parserResults[parser] = {
+                    success: false,
+                    error
+                };
+                failureCount++;
             }
         }
 
-        throw new Error(`All parsers failed.\n${errors.join("\n")}`);
+        // Merge all successful parser outputs
+        const combinedData = successfulData.reduce((merged, data) => {
+            return deepMerge(merged, data);
+        }, {});
+
+        if (onProgress) onProgress({ percent: 100, stage: `Completed: ${successCount} succeeded, ${failureCount} failed` });
+
+        console.log(`[DDDParserPipeline] Merge complete. ${successCount} parsers succeeded, ${failureCount} failed`);
+
+        return {
+            merged: true,
+            timestamp: new Date().toISOString(),
+            parsers: parserResults,
+            combinedData,
+            successCount,
+            failureCount
+        };
     }
 }
