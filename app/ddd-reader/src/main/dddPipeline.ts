@@ -36,6 +36,11 @@ function getTachographGoExePath() {
     return path.join(app.getAppPath(), "tools", "tachograph-go.exe");
 }
 
+function getTachoparserExePath() {
+    if (app.isPackaged) return path.join(process.resourcesPath, "tools", "tachoparser.exe");
+    return path.join(app.getAppPath(), "tools", "tachoparser.exe");
+}
+
 // ----------------------------------------------------------------------------
 // Parsers
 // ----------------------------------------------------------------------------
@@ -271,6 +276,78 @@ export class PythonDumperParser implements IDDDParser {
 }
 
 // ----------------------------------------------------------------------------
+// Tachoparser (traconiq/tachoparser - Go-based comprehensive parser)
+// ----------------------------------------------------------------------------
+
+export class TachoparserParser implements IDDDParser {
+    name = "tachoparser";
+
+    async parse(dddPath: string, onProgress?: ProgressCallback): Promise<any> {
+        const exe = getTachoparserExePath();
+
+        // Check if executable exists
+        try {
+            await fs.stat(exe);
+        } catch (e) {
+            throw new Error(`Tachoparser exe not found at ${exe}. See tools/BUILD_TACHOPARSER.md for build instructions.`);
+        }
+
+        if (onProgress) onProgress({ percent: 0, stage: "Starting Tachoparser..." });
+
+        // Guess mode (-card or -vu) based on filename
+        const mode = this.guessDddType(dddPath);
+
+        return new Promise((resolve, reject) => {
+            const child = spawn(exe, [mode], {
+                windowsHide: true,
+                stdio: ["pipe", "pipe", "pipe"]
+            });
+
+            let stdout = "";
+            let stderr = "";
+
+            child.stdout?.on("data", (d) => (stdout += d.toString("utf-8")));
+            child.stderr?.on("data", (d) => (stderr += d.toString("utf-8")));
+
+            // Pipe file to stdin (like dddparser)
+            const rs = fsSync.createReadStream(dddPath, { highWaterMark: 1024 * 256 });
+
+            rs.on("error", reject);
+            rs.on("end", () => child.stdin?.end());
+            rs.pipe(child.stdin!);
+
+            child.on("close", (code) => {
+                if (code !== 0) {
+                    reject(new Error(stderr || `tachoparser exited with code ${code}`));
+                } else {
+                    try {
+                        if (onProgress) onProgress({ percent: 100, stage: "Tachoparser Done" });
+                        resolve(JSON.parse(stdout));
+                    } catch (err: any) {
+                        reject(new Error(`JSON parse error from tachoparser: ${err.message}`));
+                    }
+                }
+            });
+
+            child.on("error", reject);
+        });
+    }
+
+    private guessDddType(dddPath: string): "-card" | "-vu" {
+        const name = path.basename(dddPath).toUpperCase();
+
+        // C_ prefix = driver card, M_ prefix = vehicle unit
+        if (name.startsWith("C_")) return "-card";
+        if (name.startsWith("M_")) return "-vu";
+
+        // Fallback heuristic (same as dddparser)
+        if (name.includes("DRIVER") || name.includes("CARD")) return "-card";
+        return "-vu";
+    }
+}
+
+
+// ----------------------------------------------------------------------------
 // Pipeline
 // ----------------------------------------------------------------------------
 
@@ -320,13 +397,15 @@ export class DDDParserPipeline {
 
     constructor() {
         // All available parsers:
-        // 1. ReadESM (Best)
-        // 2. TachographGo (Good)
-        // 3. Python Dump (Fallback/Demo)
-        // 4. DDDParser (Legacy)
+        // 1. ReadESM (Best for cards)
+        // 2. TachographGo (Good for both VU and cards)
+        // 3. Tachoparser (Comprehensive Gen1/2/2v2 support)
+        // 4. Python Dump (Fallback/Demo - lightweight metadata)
+        // 5. DDDParser (Legacy compatibility)
 
         this.parsers.push(new ReadEsmParser());
         this.parsers.push(new TachographGoParser());
+        this.parsers.push(new TachoparserParser());
         this.parsers.push(new PythonDumperParser());
         this.parsers.push(new DddParserExeParser());
     }
