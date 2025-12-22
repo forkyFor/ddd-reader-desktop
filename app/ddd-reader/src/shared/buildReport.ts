@@ -2,6 +2,7 @@ import type { ReportDocument, ReportTableRow } from "./reportModel";
 import { build561Blocks, computeReg561FromCombinedData, deriveDailyTotalsFromCombinedData } from "./reg561";
 import { fmtMinutes } from "./timeUtils";
 import { normalizeMergedOutput, toTitle } from "./normalize";
+import { iconizeEventLabel, iconizeFaultLabel, iconizeActivityLabel } from "./iconTokens";
 
 const PAGE_SIZE_DEFAULT = 50;
 
@@ -297,7 +298,7 @@ function buildReportFromMerged(input: any): ReportDocument {
                         const km = (kmOld || kmNew) ? `${s(kmOld)} → ${s(kmNew)}` : "";
                         const next = s(r?.next_calibration_date);
                         return {
-                            cells: [when, wk, targa || "—", vin || "—", km || "—", next || "—"],
+                            cells: [`[[ico:calibration]] ${when || ""}`.trim(), wk, targa || "—", vin || "—", km || "—", next || "—"],
                             details: {
                                 title: `Calibrazione: ${when || "—"}`,
                                 headers: ["Campo", "Valore"],
@@ -348,8 +349,8 @@ function buildReportFromMerged(input: any): ReportDocument {
             pageSize: 30,
             headers: ["Voce", "Valore"],
             rows: [
-                { cells: ["Eventi", String(eventCount)] },
-                { cells: ["Guasti", String(faultCount)] },
+                { cells: [iconizeEventLabel("Eventi"), String(eventCount)] },
+                { cells: [iconizeFaultLabel("Guasti"), String(faultCount)] },
             ]
         });
 
@@ -360,7 +361,7 @@ function buildReportFromMerged(input: any): ReportDocument {
                 pageSize: 30,
                 headers: ["Quando", "Tipo", "Veicolo"],
                 rows: normEvents.map((e: any) => ({
-                    cells: [s(e?.when), s(e?.type), s(e?.vehicle)],
+                    cells: [s(e?.when), iconizeEventLabel(s(e?.type)), s(e?.vehicle)],
                     details: {
                         title: `Evento: ${s(e?.type) || "—"}`,
                         headers: ["Campo", "Valore"],
@@ -377,7 +378,7 @@ function buildReportFromMerged(input: any): ReportDocument {
                 pageSize: 30,
                 headers: ["Quando", "Tipo", "Veicolo"],
                 rows: normFaults.map((f: any) => ({
-                    cells: [s(f?.when), s(f?.type), s(f?.vehicle)],
+                    cells: [s(f?.when), iconizeFaultLabel(s(f?.type)), s(f?.vehicle)],
                     details: {
                         title: `Guasto: ${s(f?.type) || "—"}`,
                         headers: ["Campo", "Valore"],
@@ -530,7 +531,7 @@ function buildReportFromReadEsm(json: any): ReportDocument {
             rows: sortedEvents.map((e: any, idx: number) => ({
                 cells: [
                     String(idx + 1),
-                    s(e?.eventType ?? e?.type ?? e?.title),
+                    iconizeEventLabel(s(e?.eventType ?? e?.type ?? e?.title)),
                     s(e?.eventTime ?? e?.time ?? extractFromIso(e?.title || "")),
                     s(e?.eventVehicleRegistration?.title ?? e?.vehicle ?? e?.details ?? ""),
                 ],
@@ -555,7 +556,7 @@ function buildReportFromReadEsm(json: any): ReportDocument {
             rows: sortedFaults.map((f: any, idx: number) => ({
                 cells: [
                     String(idx + 1),
-                    s(f?.faultType ?? f?.type ?? f?.title),
+                    iconizeFaultLabel(s(f?.faultType ?? f?.type ?? f?.title)),
                     s(f?.faultTime ?? f?.time ?? extractFromIso(f?.title || "")),
                     s(f?.faultVehicleRegistration?.title ?? f?.vehicle ?? f?.details ?? ""),
                 ],
@@ -629,7 +630,7 @@ function buildReportFromReadEsm(json: any): ReportDocument {
 
             const detailRows = sortedChanges.map((c: any, idx: number) => [
                 String(idx + 1),
-                s(c?.activity),
+                iconizeActivityLabel(s(c?.activity)),
                 s(c?.from),
                 s(c?.duration),
                 s(c?.time),
@@ -792,7 +793,7 @@ function buildReportFromDddParser(data: any): ReportDocument {
             rows: sortedEvents.map((e: any, idx: number) => ({
                 cells: [
                     String(idx + 1),
-                    s(e?.event_type ?? e?.eventType ?? e?.type ?? e?.title),
+                    iconizeEventLabel(s(e?.event_type ?? e?.eventType ?? e?.type ?? e?.title)),
                     s(e?.event_time ?? e?.eventTime ?? e?.time ?? extractFromIso(e?.title || "")),
                     s(e?.event_vehicle_registration ?? e?.vehicle ?? e?.details ?? ""),
                 ],
@@ -817,7 +818,7 @@ function buildReportFromDddParser(data: any): ReportDocument {
             rows: sortedFaults.map((f: any, idx: number) => ({
                 cells: [
                     String(idx + 1),
-                    s(f?.fault_type ?? f?.faultType ?? f?.type ?? f?.title),
+                    iconizeFaultLabel(s(f?.fault_type ?? f?.faultType ?? f?.type ?? f?.title)),
                     s(f?.fault_time ?? f?.faultTime ?? f?.time ?? extractFromIso(f?.title || "")),
                     s(f?.fault_vehicle_registration ?? f?.vehicle ?? f?.details ?? ""),
                 ],

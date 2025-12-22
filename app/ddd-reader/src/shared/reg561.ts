@@ -1,4 +1,5 @@
 import { addDays, fmtMinutes, isoWeekKey, parseDurationHHMM, s } from "./timeUtils";
+import { iconizeActivityLabel, iconizeStatusLabel, iconizeViolationLabel } from "./iconTokens";
 
 export type Reg561Daily = {
   date: string; // YYYY-MM-DD (UTC day)
@@ -325,7 +326,8 @@ function buildActivityDetailsTable(combinedData: any, date: string): { title: st
     const dur = parseDurationHHMM(c?.duration);
     if (startMin !== null) cursor = startMin;
     const endMin = cursor + dur;
-    const activity = String(c?.activity ?? c?.title ?? c?.activityCode ?? "");
+    const activityRaw = String(c?.activity ?? c?.title ?? c?.activityCode ?? "");
+    const activity = iconizeActivityLabel(activityRaw);
     rows.push([
       minutesToHHMM(cursor),
       minutesToHHMM(endMin),
@@ -360,7 +362,8 @@ function buildBreakViolationDetails(combinedData: any, v: Reg561BreakViolation):
     const durMin = parseDurationHHMM(c?.duration);
     if (startMin !== null) cursor = startMin;
     const end = cursor + durMin;
-    segments.push({ start: cursor, end, activity: String(c?.activity ?? c?.title ?? c?.activityCode ?? ""), dur: c?.duration ? String(c.duration) : "" });
+    const activityRaw = String(c?.activity ?? c?.title ?? c?.activityCode ?? "");
+    segments.push({ start: cursor, end, activity: iconizeActivityLabel(activityRaw), dur: c?.duration ? String(c.duration) : "" });
     cursor = end;
   }
 
@@ -447,9 +450,9 @@ export function build561Blocks(
           s(d.date),
           fmtMinutes(d.drivingMinutes),
           d.isExtendedTo10h ? "Sì" : "No",
-          s(d.dailyDrivingViolation || ""),
+          d.dailyDrivingViolation ? iconizeViolationLabel(s(d.dailyDrivingViolation)) : "",
           fmtMinutes(d.longestRestMinutes),
-          s(d.dailyRestFlag || ""),
+          iconizeStatusLabel(s(d.dailyRestFlag || "")),
         ],
         details: combinedData ? buildActivityDetailsTable(combinedData, String(d.date)) : undefined,
       })),
@@ -473,14 +476,14 @@ export function build561Blocks(
                 s(d.date),
                 fmtMinutes(d.drivingMinutes),
                 d.isExtendedTo10h ? "Sì" : "No",
-                s(d.dailyRestFlag || ""),
-                s(d.dailyDrivingViolation || ""),
+                iconizeStatusLabel(s(d.dailyRestFlag || "")),
+                d.dailyDrivingViolation ? iconizeViolationLabel(s(d.dailyDrivingViolation)) : "",
               ]),
             }
           : undefined;
 
         return {
-          cells: [s(w.isoWeek), fmtMinutes(w.drivingMinutes), s(w.weeklyDrivingViolation || "")],
+          cells: [s(w.isoWeek), fmtMinutes(w.drivingMinutes), w.weeklyDrivingViolation ? iconizeViolationLabel(s(w.weeklyDrivingViolation)) : ""],
           details,
         };
       }),
@@ -494,7 +497,7 @@ export function build561Blocks(
       pageSize: 30,
       headers: ["Quando", "Guida da ultima pausa", "Nota"],
       rows: breakViolations.map((v: any) => ({
-        cells: [s(v.at), fmtMinutes(v.drivingSinceLastBreakMinutes), s(v.message)],
+        cells: [s(v.at), fmtMinutes(v.drivingSinceLastBreakMinutes), v.message ? iconizeViolationLabel(s(v.message)) : ""],
         details: combinedData ? buildBreakViolationDetails(combinedData, v) : undefined,
       })),
     });
@@ -511,7 +514,7 @@ export function build561Blocks(
         const end = String(v.windowEnd);
         const days = daily.filter((d) => String(d.date) >= start && String(d.date) <= end);
         return {
-          cells: [`${s(v.windowStart)} → ${s(v.windowEnd)}`, fmtMinutes(v.drivingMinutes), s(v.message)],
+          cells: [`${s(v.windowStart)} → ${s(v.windowEnd)}`, fmtMinutes(v.drivingMinutes), v.message ? iconizeViolationLabel(s(v.message)) : ""],
           details: days.length
             ? {
                 title: `Dettaglio finestra 14 giorni ${start} → ${end}`,

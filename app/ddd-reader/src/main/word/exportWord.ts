@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
     Document,
     Packer,
@@ -10,18 +13,66 @@ import {
     HeadingLevel,
     WidthType,
     TableLayoutType,
+    ImageRun,
 } from "docx";
 
 import { buildReport } from "../../shared/buildReport";
 import type { ReportBlock, ReportDocument, ReportTableRow } from "../../shared/reportModel";
+import { parseIconToken } from "../../shared/iconTokens";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const ICON_CACHE: Record<string, Buffer | null> = {};
+
+function getEventIconBuffer(key: string): Buffer | null {
+    const k = String(key ?? "").toLowerCase();
+    if (!k) return null;
+    if (Object.prototype.hasOwnProperty.call(ICON_CACHE, k)) return ICON_CACHE[k];
+
+    // assets are committed in src/main/word/assets/event-icons
+    const p = path.resolve(__dirname, "assets", "event-icons", `${k}.png`);
+    try {
+        const buf = fsSync.readFileSync(p);
+        ICON_CACHE[k] = buf;
+        return buf;
+    } catch {
+        ICON_CACHE[k] = null;
+        return null;
+    }
+}
 
 function cell(text: string, isHeader = false) {
+    const raw = String(text ?? "");
+    if (isHeader) {
+        return new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: raw || "—", bold: true })] })],
+        });
+    }
+
+    const parsed = parseIconToken(raw);
+    if (parsed) {
+        const icon = getEventIconBuffer(parsed.key);
+        if (icon) {
+            return new TableCell({
+                children: [
+                    new Paragraph({
+                        children: [
+                            new ImageRun({ data: icon, transformation: { width: 12, height: 12 } }),
+                            new TextRun({ text: ` ${parsed.text || ""}` }),
+                        ],
+                    }),
+                ],
+            });
+        }
+        // fallback: no icon file found
+        return new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: parsed.text || "—" })] })],
+        });
+    }
+
     return new TableCell({
-        children: [
-            new Paragraph({
-                children: [new TextRun({ text: text || "—", bold: isHeader })],
-            }),
-        ],
+        children: [new Paragraph({ children: [new TextRun({ text: raw || "—" })] })],
     });
 }
 

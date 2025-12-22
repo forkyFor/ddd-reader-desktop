@@ -1,5 +1,7 @@
 import { Fragment, useMemo, useState, useEffect } from "react";
 import type { ReportTableRow } from "../../../shared/reportModel";
+import { parseIconToken } from "../../../shared/iconTokens";
+import { getEventIconUrl } from "../lib/eventIcons";
 
 type Props = {
     headers?: string[];
@@ -8,6 +10,19 @@ type Props = {
 };
 
 export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
+    function renderCell(value: string) {
+        const parsed = parseIconToken(String(value ?? ""));
+        if (!parsed) return value || "—";
+        const url = getEventIconUrl(parsed.key);
+        if (!url) return parsed.text || "—";
+
+        return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <img src={url} alt={parsed.key} style={{ width: 16, height: 16, opacity: 0.95 }} />
+                <span>{parsed.text || "—"}</span>
+            </span>
+        );
+    }
     const safeHeaders = Array.isArray(headers) ? headers : [];
     const safeRows = Array.isArray(rows) ? rows : [];
 
@@ -214,7 +229,7 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
                                                     whiteSpace: "pre-wrap",
                                                 }}
                                             >
-                                                {c || "—"}
+                                                {renderCell(c)}
                                             </td>
                                         ))}
                                     </tr>
@@ -257,7 +272,7 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
                                                                                 whiteSpace: "pre-wrap",
                                                                             }}
                                                                         >
-                                                                            {dc || "—"}
+                                                                            {renderCell(dc)}
                                                                         </td>
                                                                     ))}
                                                                 </tr>
