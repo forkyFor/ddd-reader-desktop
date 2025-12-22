@@ -160,6 +160,7 @@ function flattenMaybeArrayOfRecords(container: any, key: string): any[] {
 export function buildReport(input: any): ReportDocument {
     // Check if this is a merged parser output
     let json = input;
+    const normalized = input?.normalized; // produced by src/shared/dddNormalize.ts via the main pipeline
 
     if (input?.merged === true && input?.combinedData) {
         // This is the new merged output from all parsers
@@ -173,21 +174,39 @@ export function buildReport(input: any): ReportDocument {
         json = unwrapIfNeeded(input);
     }
 
+    let doc: ReportDocument;
+
     // Check for DRIVER CARDS first (more common and to avoid false positives)
-    if (isReadEsmShape(json)) return buildReportFromReadEsm(json);
-    if (isDddParserShape(json)) return buildReportFromDddParser(json);
-
+    if (isReadEsmShape(json)) doc = buildReportFromReadEsm(json);
+    else if (isDddParserShape(json)) doc = buildReportFromDddParser(json);
     // Then check for VEHICLE UNITS
-    if (isVehicleUnitShape(json)) return buildReportFromVehicleUnit(json);
-
+    else if (isVehicleUnitShape(json)) doc = buildReportFromVehicleUnit(json);
     // fallback minimale: se non riconosciuto
-    return {
-        blocks: [
-            { type: "title", text: "DDD Report" },
-            { type: "p", text: "Formato non riconosciuto per la formattazione a report. Mostra JSON grezzo finché non mappiamo questo tipo." }
-        ]
-    };
+    else {
+        doc = {
+            blocks: [
+                { type: "title", text: "DDD Report" },
+                { type: "p", text: "Formato non riconosciuto per la formattazione a report. Mostra JSON grezzo finché non mappiamo questo tipo." }
+            ]
+        };
+    }
+
+    // Append Regulation 561/2006 summary if we have a normalized compliance report.
+    if (normalized?.compliance561) {
+        doc.blocks.push(...build561Blocks(normalized.compliance561));
+    }
+
+    return doc;
 }
+
+function fmtHM(mins: number | undefined): string {
+    if (typeof mins !== "number") return "";
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+}
+
+
 
 /* ---------------------------
    READESM (PRIMO PLUGIN)
@@ -764,4 +783,222 @@ function buildReportFromVehicleUnit(data: any): ReportDocument {
 
     return { blocks };
 }
+
+/* ---------------------------
+   REG. (CE) 561/2006 – SUMMARY
+   (generated from normalized.compliance561)
+---------------------------- */
+
+function fmtMinutes(mins?: number | null): string {
+    if (mins === null || mins === undefined) return "";
+    const sign = mins < 0 ? "-" : "";
+    const m = Math.abs(mins);
+    const hh = Math.floor(m / 60);
+    const mm = Math.round(m % 60);
+    return `${sign}${hh}h${String(mm).padStart(2, "0")}`;
+}
+
+function build561BlocksStime(c561: any): ReportDocument["blocks"] {
+    const blocks: ReportDocument["blocks"] = [];
+
+    blocks.push({ type: "h1", text: "Reg. (CE) 561/2006 - Sintesi (stime)" });
+
+    blocks.push({
+        type: "p",
+        text:
+            `Periodo analizzato: ${s(c561?.periodStart || "").slice(0, 10)} → ${s(c561?.periodEnd || "").slice(0, 10)}. ` +
+            `Le verifiche sono basate su giorni di calendario (UTC) e servono come indicazione rapida.`
+    });
+
+    const daily: any[] = Array.isArray(c561?.daily) ? c561.daily : [];
+    const weekly: any[] = Array.isArray(c561?.weekly) ? c561.weekly : [];
+    const breakViolations: any[] = Array.isArray(c561?.breakViolations) ? c561.breakViolations : [];
+    const fortnightViolations: any[] = Array.isArray(c561?.fortnightViolations) ? c561.fortnightViolations : [];
+
+    const dailyViolCount = daily.filter((d) => d?.dailyDrivingViolation || d?.dailyRestFlag === "INSUFFICIENT").length;
+    const weeklyViolCount = weekly.filter((w) => w?.weeklyDrivingViolation).length;
+
+    blocks.push({
+        type: "table",
+        headers: ["Voce", "Valore"],
+        ...strTable(
+            kvRows([
+                ["Giorni con potenziale violazione (guida/rest)", dailyViolCount],
+                ["Settimane con potenziale violazione (56h)", weeklyViolCount],
+                ["Violazioni pause (4h30 / 45m)", breakViolations.length],
+                ["Violazioni 2 settimane (90h su 14 giorni)", fortnightViolations.length],
+            ]),
+            999
+        )
+    });
+
+    if (daily.length) {
+        blocks.push({ type: "h1", text: "Dettaglio giornaliero" });
+        blocks.push({
+            type: "table",
+            headers: ["Data", "Guida", "Estensione 10h", "Riposo (max)", "Flag riposo", "Note"],
+            pageSize: 30,
+            rows: daily.map((d) => ({
+                cells: [
+                    s(d?.date),
+                    fmtHM(d?.drivingMinutes),
+                    d?.isExtendedTo10h ? "SI" : "NO",
+                    fmtHM(d?.longestRestMinutes),
+                    s(d?.dailyRestFlag),
+                    s(d?.dailyDrivingViolation || ""),
+                ]
+            }))
+        });
+    }
+
+    if (weekly.length) {
+        blocks.push({ type: "h1", text: "Dettaglio settimanale" });
+        blocks.push({
+            type: "table",
+            headers: ["ISO Week", "Guida", "Note"],
+            pageSize: 30,
+            rows: weekly.map((w) => ({
+                cells: [s(w?.isoWeek), fmtHM(w?.drivingMinutes), s(w?.weeklyDrivingViolation || "")]
+            }))
+        });
+    }
+
+    if (breakViolations.length) {
+        blocks.push({ type: "h1", text: "Violazioni pause" });
+        blocks.push({
+            type: "table",
+            headers: ["Quando", "Guida continuativa", "Descrizione"],
+            pageSize: 30,
+            rows: breakViolations.map((v) => ({
+                cells: [s(v?.at), fmtHM(v?.drivingSinceLastBreakMinutes), s(v?.message)]
+            }))
+        });
+    }
+
+    if (fortnightViolations.length) {
+        blocks.push({ type: "h1", text: "Violazioni 90h / 2 settimane" });
+        blocks.push({
+            type: "table",
+            headers: ["Da", "A", "Guida", "Descrizione"],
+            pageSize: 30,
+            rows: fortnightViolations.map((v) => ({
+                cells: [s(v?.windowStart), s(v?.windowEnd), fmtHM(v?.drivingMinutes), s(v?.message)]
+            }))
+        });
+    }
+
+    return blocks;
+}
+
+function build561BlocksTacho(c561: any): ReportDocument["blocks"] {
+    const blocks: ReportDocument["blocks"] = [];
+
+    blocks.push({ type: "h1", text: "Reg. (CE) 561/2006 – Sintesi (calcolo da tachigrafo)" });
+
+    const period = [c561?.periodStart, c561?.periodEnd].filter(Boolean).join(" → ");
+    if (period) blocks.push({ type: "p", text: `Periodo analizzato: ${period}` });
+
+    const daily = Array.isArray(c561?.daily) ? c561.daily : [];
+    const weekly = Array.isArray(c561?.weekly) ? c561.weekly : [];
+    const breakViolations = Array.isArray(c561?.breakViolations) ? c561.breakViolations : [];
+    const fortnightViolations = Array.isArray(c561?.fortnightViolations) ? c561.fortnightViolations : [];
+
+    const dailyDrivingViol = daily.filter((d: any) => !!d.dailyDrivingViolation).length;
+    const dailyRestInsuff = daily.filter((d: any) => d.dailyRestFlag === "INSUFFICIENT").length;
+    const weeklyViol = weekly.filter((w: any) => !!w.weeklyDrivingViolation).length;
+
+    blocks.push({
+        type: "table",
+        pageSize: 30,
+        headers: ["Voce", "Valore"],
+        ...strTable(
+            kvRows([
+                ["Giorni analizzati", daily.length],
+                ["Violazioni guida giornaliera", dailyDrivingViol],
+                ["Giorni con riposo insufficiente", dailyRestInsuff],
+                ["Settimane con violazione guida", weeklyViol],
+                ["Violazioni pause (4h30)", breakViolations.length],
+                ["Violazioni 14 giorni (90h)", fortnightViolations.length],
+            ]),
+            30
+        ),
+    });
+
+    if (daily.length) {
+        blocks.push({ type: "h1", text: "Dettaglio giornaliero (approssimazione su giorni di calendario UTC)" });
+        blocks.push({
+            type: "table",
+            pageSize: 40,
+            headers: ["Data", "Guida", "10h?", "Violazione guida", "Riposo max", "Riposo"],
+            rows: daily.map((d: any) => ({
+                cells: [
+                    s(d.date),
+                    fmtMinutes(d.drivingMinutes),
+                    d.isExtendedTo10h ? "Sì" : "No",
+                    s(d.dailyDrivingViolation || ""),
+                    fmtMinutes(d.longestRestMinutes),
+                    s(d.dailyRestFlag || ""),
+                ]
+            }))
+        });
+    }
+
+    if (weekly.length) {
+        blocks.push({ type: "h1", text: "Dettaglio settimanale" });
+        blocks.push({
+            type: "table",
+            pageSize: 30,
+            headers: ["Settimana ISO", "Guida", "Violazione"],
+            rows: weekly.map((w: any) => ({
+                cells: [s(w.isoWeek), fmtMinutes(w.drivingMinutes), s(w.weeklyDrivingViolation || "")]
+            }))
+        });
+    }
+
+    if (breakViolations.length) {
+        blocks.push({ type: "h1", text: "Violazioni pause (Art. 7 – guida continuativa)" });
+        blocks.push({
+            type: "table",
+            pageSize: 30,
+            headers: ["Quando", "Guida da ultima pausa", "Nota"],
+            rows: breakViolations.map((v: any) => ({
+                cells: [s(v.at), fmtMinutes(v.drivingSinceLastBreakMinutes), s(v.message)]
+            }))
+        });
+    }
+
+    if (fortnightViolations.length) {
+        blocks.push({ type: "h1", text: "Violazioni su 14 giorni (Art. 6 – 90h)" });
+        blocks.push({
+            type: "table",
+            pageSize: 30,
+            headers: ["Finestra", "Guida", "Nota"],
+            rows: fortnightViolations.map((v: any) => ({
+                cells: [
+                    `${s(v.windowStart)} → ${s(v.windowEnd)}`,
+                    fmtMinutes(v.drivingMinutes),
+                    s(v.message),
+                ]
+            }))
+        });
+    }
+
+    if (Array.isArray(c561?.notes) && c561.notes.length) {
+        blocks.push({ type: "h1", text: "Note sul calcolo" });
+        for (const n of c561.notes) blocks.push({ type: "p", text: s(n) });
+    }
+
+    return blocks;
+}
+
+/**
+ * Wrapper: scegli quale versione usare.
+ * Se non hai un flag oggi, puoi lasciare sempre quella "Tacho".
+ */
+function build561Blocks(c561: any): ReportDocument["blocks"] {
+    // esempio: se c561.calculationMode === "ESTIMATE" usa Stime, altrimenti Tacho
+    const mode = s(c561?.calculationMode || "").toUpperCase();
+    return mode === "ESTIMATE" ? build561BlocksStime(c561) : build561BlocksTacho(c561);
+}
+
 
