@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import fs from "node:fs/promises";
 import { exportReportToWord } from "./word/exportWord";
+import { normalizeMergedOutput } from "../shared/normalize";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import icon from "../../resources/icon.png?asset";
 
@@ -103,7 +104,18 @@ ipcMain.handle("ddd:listJsonFiles", async (_evt, folderPath: string) => {
 
 ipcMain.handle("ddd:readJsonFile", async (_evt, filePath: string) => {
   const raw = await fs.readFile(filePath, "utf-8");
-  return JSON.parse(raw);
+  const parsed = JSON.parse(raw);
+
+  // Backward compatibility: older generated JSON didn't include a normalized view.
+  if (parsed?.merged && parsed?.combinedData && !parsed?.normalized) {
+    try {
+      parsed.normalized = normalizeMergedOutput({ combinedData: parsed.combinedData });
+    } catch {
+      // ignore
+    }
+  }
+
+  return parsed;
 });
 
 // ----------------------

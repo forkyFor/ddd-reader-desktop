@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import { spawn } from "node:child_process";
-import { tachogramUploadAndWait } from "./external/tachogramApi";
+import { normalizeMergedOutput } from "../shared/normalize";
 
 export interface ParseProgress {
     percent: number;
@@ -347,6 +347,70 @@ export class TachoparserParser implements IDDDParser {
     }
 }
 
+/**
+ * Optional: run a local command as additional parser.
+ * The command is split on spaces (basic) and receives the .ddd path as last argument.
+ * It must output JSON to stdout.
+ */
+export class LocalCmdParser implements IDDDParser {
+    name: string;
+    private cmd: string;
+    private args: string[];
+
+    constructor(command: string) {
+        // Very small splitter: supports quoted segments.
+        const parts = splitCommand(command);
+        this.cmd = parts[0] ?? command;
+        this.args = parts.slice(1);
+        this.name = `LocalCmd(${path.basename(this.cmd)})`;
+    }
+
+    async parse(dddPath: string, onProgress?: ProgressCallback): Promise<any> {
+        if (onProgress) onProgress({ percent: 0, stage: `${this.name}: running...` });
+
+        const stdout = await runCommandCaptureStdout(this.cmd, [...this.args, dddPath]);
+        const json = JSON.parse(stdout);
+        if (onProgress) onProgress({ percent: 100, stage: `${this.name}: done` });
+        return json;
+    }
+}
+
+function splitCommand(cmdLine: string): string[] {
+    const out: string[] = [];
+    let cur = "";
+    let inQuotes = false;
+    for (let i = 0; i < cmdLine.length; i++) {
+        const ch = cmdLine[i];
+        if (ch === '"') {
+            inQuotes = !inQuotes;
+            continue;
+        }
+        if (!inQuotes && /\s/.test(ch)) {
+            if (cur) out.push(cur);
+            cur = "";
+            continue;
+        }
+        cur += ch;
+    }
+    if (cur) out.push(cur);
+    return out;
+}
+
+function runCommandCaptureStdout(cmd: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => (out += d.toString("utf-8")));
+        child.stderr.on("data", (d) => (err += d.toString("utf-8")));
+        child.on("close", (code) => {
+            if (code === 0) return resolve(out);
+            reject(new Error(`LocalCmd failed (code ${code}): ${err || out}`));
+        });
+        child.on("error", reject);
+    });
+}
+
 
 // ----------------------------------------------------------------------------
 // Pipeline
@@ -389,11 +453,9 @@ export interface MergedParserOutput {
     timestamp: string;
     parsers: Record<string, ParserResult>;
     combinedData: any;
+    normalized: any;
     successCount: number;
     failureCount: number;
-    external?: {
-        tachogram?: any;
-    };
 }
 
 export class DDDParserPipeline {
@@ -412,6 +474,14 @@ export class DDDParserPipeline {
         this.parsers.push(new TachoparserParser());
         this.parsers.push(new PythonDumperParser());
         this.parsers.push(new DddParserExeParser());
+
+        // Optional local extra parser (no network):
+        // Set DDD_EXTRA_PARSER_CMD to a command that accepts the .ddd path as LAST argument and prints JSON to stdout.
+        // Example (Windows): set DDD_EXTRA_PARSER_CMD="python tools\\my_parser.py"
+        const extra = (process.env.DDD_EXTRA_PARSER_CMD ?? "").trim();
+        if (extra) {
+            this.parsers.push(new LocalCmdParser(extra));
+        }
     }
 
     async parse(dddPath: string, onProgress?: ProgressCallback): Promise<MergedParserOutput> {
@@ -464,25 +534,8 @@ export class DDDParserPipeline {
             return deepMerge(merged, data);
         }, {});
 
-        // Optional: external API enrichment (Tachogram/Tachoweb).
-        // Enable by setting: TACHOGRAM_API_BASE_URL and TACHOGRAM_API_KEY
-        let external: any = undefined;
-        const apiKey = process.env.TACHOGRAM_API_KEY;
-        const baseUrl = process.env.TACHOGRAM_API_BASE_URL;
-        if (apiKey && baseUrl) {
-            try {
-                if (onProgress) onProgress({ percent: 95, stage: "External enrichment: Tachogram API..." });
-                const res = await tachogramUploadAndWait({
-                    apiKey,
-                    baseUrl,
-                    filePath: dddPath,
-                    timeoutMs: Number(process.env.TACHOGRAM_API_TIMEOUT_MS ?? 30000),
-                });
-                external = { tachogram: res };
-            } catch (e: any) {
-                external = { tachogram: { error: e?.message ?? String(e) } };
-            }
-        }
+        // Normalize (driver/vehicle IDs, vehicles, events/faults, period) so the UI can show readable fields.
+        const normalized = normalizeMergedOutput({ combinedData, dddPath });
 
         if (onProgress) onProgress({ percent: 100, stage: `Completed: ${successCount} succeeded, ${failureCount} failed` });
 
@@ -493,9 +546,9 @@ export class DDDParserPipeline {
             timestamp: new Date().toISOString(),
             parsers: parserResults,
             combinedData,
+            normalized,
             successCount,
             failureCount,
-            external,
         };
     }
 }

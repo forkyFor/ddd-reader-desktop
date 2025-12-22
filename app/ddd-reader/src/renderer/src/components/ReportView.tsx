@@ -3,7 +3,7 @@ import ReportTable from "./ReportTable";
 
 export default function ReportView({ doc }: { doc: ReportDocument }) {
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, overflowX: "auto" }}>
             {doc.blocks.map((b, idx) => {
                 if (b.type === "title") {
                     return <h2 key={idx} style={{ margin: 0 }}>{b.text}</h2>;

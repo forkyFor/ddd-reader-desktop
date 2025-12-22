@@ -1,12 +1,15 @@
 import type { ReportDocument, ReportTableRow } from "./reportModel";
 import { build561Blocks, computeReg561FromCombinedData, deriveDailyTotalsFromCombinedData } from "./reg561";
 import { fmtMinutes } from "./timeUtils";
+import { normalizeMergedOutput, toTitle } from "./normalize";
 
 const PAGE_SIZE_DEFAULT = 50;
 
 const s = (v: any, max = 2000) => {
     if (v === null || v === undefined) return "";
-    let out = typeof v === "string" ? v : String(v);
+    let out = toTitle(v);
+    if (!out && typeof v === "string") out = v;
+    if (!out) out = "";
     if (out.length > max) out = out.slice(0, max) + "…";
     return out;
 };
@@ -191,7 +194,7 @@ export function buildReport(input: any): ReportDocument {
 function buildReportFromMerged(input: any): ReportDocument {
     const blocks: ReportDocument["blocks"] = [];
     const combinedData = input?.combinedData ?? {};
-    const normalized = input?.normalized ?? {};
+    const normalized = input?.normalized ?? normalizeMergedOutput({ combinedData });
 
     // Header
     blocks.push({ type: "title", text: "Report Tachigrafo Digitale (.ddd)" });
@@ -200,20 +203,20 @@ function buildReportFromMerged(input: any): ReportDocument {
     const isDriverFile = !!combinedData?.CardDriverActivity;
     const entityType = normalized?.entityType && normalized.entityType !== "UNKNOWN"
         ? String(normalized.entityType)
-        : (isDriverFile ? "DRIVER" : "VEHICLE");
+        : (isDriverFile ? "DRIVER_CARD" : "VEHICLE_UNIT");
 
     const id = combinedData?.Identification ?? {};
-    const driverName = normalized?.driver?.name || id?.cardHolderName;
-    const driverCardNumber = normalized?.driver?.cardNumber || id?.cardNumber;
-    const cardExpiry = normalized?.driver?.cardExpiryDate || id?.cardExpiryDate;
-    const issueCountry = id?.cardIssuingMemberState || normalized?.driver?.cardIssuingMemberState;
+    const driverName = normalized?.driver?.name || toTitle(id?.cardHolderName);
+    const driverCardNumber = normalized?.driver?.cardNumber || toTitle(id?.cardNumber);
+    const cardExpiry = normalized?.driver?.cardExpiryDate || toTitle(id?.cardExpiryDate);
+    const issueCountry = normalized?.driver?.cardIssuingMemberState || toTitle(id?.cardIssuingMemberState);
 
     // Vehicles used (from card file)
     const vehicleRecords: any[] = Array.isArray(combinedData?.CardVehiclesUsed?.CardVehicleRecord?.records)
         ? combinedData.CardVehiclesUsed.CardVehicleRecord.records
         : [];
     const vehicleRegs = Array.from(
-        new Set(vehicleRecords.map((r) => s(r?.registration)).filter(Boolean))
+        new Set(vehicleRecords.map((r) => toTitle(r?.registration ?? r?.vehicleRegistration)).filter(Boolean))
     );
 
     // Coverage
@@ -228,7 +231,7 @@ function buildReportFromMerged(input: any): ReportDocument {
         pageSize: 30,
         ...strTable(
             kvRows([
-                ["Tipo file", entityType === "DRIVER" ? "Conducente" : entityType === "VEHICLE" ? "Veicolo" : entityType],
+                ["Tipo file", entityType === "DRIVER_CARD" || entityType === "DRIVER" ? "Conducente" : entityType === "VEHICLE_UNIT" || entityType === "VEHICLE" ? "Veicolo" : entityType],
                 ["Conducente", driverName],
                 ["Numero carta", driverCardNumber],
                 ["Scadenza carta", cardExpiry],
@@ -244,7 +247,7 @@ function buildReportFromMerged(input: any): ReportDocument {
     // Reg 561/2006 (driver files only)
     if (isDriverFile) {
         const c561 = computeReg561FromCombinedData(combinedData);
-        blocks.push(...(build561Blocks(c561) as any));
+        blocks.push(...(build561Blocks(c561, combinedData) as any));
     }
 
     // Daily totals table
@@ -276,7 +279,7 @@ function buildReportFromMerged(input: any): ReportDocument {
         : 0;
 
     if (eventCount || faultCount) {
-        blocks.push({ type: "h1", text: "Eventi e anomalie (conteggi)" });
+        blocks.push({ type: "h1", text: "Eventi e anomalie" });
         blocks.push({
             type: "table",
             pageSize: 30,
@@ -286,6 +289,46 @@ function buildReportFromMerged(input: any): ReportDocument {
                 { cells: ["Guasti", String(faultCount)] },
             ]
         });
+
+        const evRecords: any[] = Array.isArray(combinedData?.CardEventData?.CardEventRecord?.records)
+            ? combinedData.CardEventData.CardEventRecord.records
+            : [];
+        if (evRecords.length) {
+            blocks.push({ type: "h1", text: "Dettaglio eventi" });
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Quando", "Tipo", "Veicolo"],
+                rows: evRecords.map((e: any) => ({
+                    cells: [s(e?.eventTime), s(e?.eventType), s(e?.eventVehicleRegistration)],
+                    details: {
+                        title: `Evento: ${s(e?.eventType) || "—"}`,
+                        headers: ["Campo", "Valore"],
+                        rows: Object.entries(e ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                    }
+                }))
+            });
+        }
+
+        const ftRecords: any[] = Array.isArray(combinedData?.CardFaultData?.CardFaultRecord?.records)
+            ? combinedData.CardFaultData.CardFaultRecord.records
+            : [];
+        if (ftRecords.length) {
+            blocks.push({ type: "h1", text: "Dettaglio guasti" });
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Quando", "Tipo", "Veicolo"],
+                rows: ftRecords.map((f: any) => ({
+                    cells: [s(f?.faultTime ?? f?.eventTime), s(f?.faultType ?? f?.eventType), s(f?.faultVehicleRegistration ?? f?.eventVehicleRegistration)],
+                    details: {
+                        title: `Guasto: ${s(f?.faultType ?? f?.eventType) || "—"}`,
+                        headers: ["Campo", "Valore"],
+                        rows: Object.entries(f ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                    }
+                }))
+            });
+        }
     }
 
     blocks.push({

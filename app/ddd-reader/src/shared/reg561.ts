@@ -282,7 +282,130 @@ export function computeReg561FromCombinedData(combinedData: any): Reg561Report {
 // Blocks builder (ReportView)
 // ---------------------------
 
-export function build561Blocks(c561: Reg561Report): { type: any; text?: string; headers?: string[]; rows?: any[]; pageSize?: number }[] {
+function hhmmToMinutes(hhmm: string): number | null {
+  if (!hhmm) return null;
+  const m = String(hhmm).match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mi)) return null;
+  return h * 60 + mi;
+}
+
+function minutesToHHMM(mins: number): string {
+  const m = ((mins % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function extractFromTo(text: string): { from?: string; to?: string } {
+  if (!text) return {};
+  const m = String(text).match(/From\s+([^\s]+)\s+To\s+([^\s]+)/i);
+  if (!m) return {};
+  return { from: m[1], to: m[2] };
+}
+
+function getActivityChangesForDate(combinedData: any, date: string): any[] {
+  const rec = combinedData?.CardDriverActivity?.CardActivityDailyRecord?.dailyRecords?.[date];
+  const changes = Array.isArray(rec?.ActivityChangeInfo?.records) ? rec.ActivityChangeInfo.records : [];
+  return changes;
+}
+
+function buildActivityDetailsTable(combinedData: any, date: string): { title: string; headers: string[]; rows: string[][] } | undefined {
+  const changes = getActivityChangesForDate(combinedData, date);
+  if (!changes.length) return undefined;
+
+  // Build a best-effort timeline with start/end.
+  let cursor = 0;
+  const rows: string[][] = [];
+  for (const c of changes) {
+    const from = typeof c?.from === "string" ? c.from : "";
+    const startMin = hhmmToMinutes(from);
+    const dur = parseDurationHHMM(c?.duration);
+    if (startMin !== null) cursor = startMin;
+    const endMin = cursor + dur;
+    const activity = String(c?.activity ?? c?.title ?? c?.activityCode ?? "");
+    rows.push([
+      minutesToHHMM(cursor),
+      minutesToHHMM(endMin),
+      activity,
+      c?.duration ? String(c.duration) : "",
+      c?.activityCode !== undefined ? String(c.activityCode) : "",
+    ]);
+    cursor = endMin;
+  }
+
+  return {
+    title: `Attività (dettaglio) – ${date}`,
+    headers: ["Da", "A", "Attività", "Durata", "Codice"],
+    rows,
+  };
+}
+
+function buildBreakViolationDetails(combinedData: any, v: Reg561BreakViolation): { title: string; headers: string[]; rows: string[][] } | undefined {
+  const at = String(v?.at ?? "");
+  const date = at.slice(0, 10);
+  const timePart = at.length >= 16 ? at.slice(11, 16) : "";
+  const tMin = hhmmToMinutes(timePart);
+  const changes = getActivityChangesForDate(combinedData, date);
+  if (!changes.length) return undefined;
+
+  // Rebuild segments with absolute minutes
+  let cursor = 0;
+  const segments: { start: number; end: number; activity: string; dur: string }[] = [];
+  for (const c of changes) {
+    const from = typeof c?.from === "string" ? c.from : "";
+    const startMin = hhmmToMinutes(from);
+    const durMin = parseDurationHHMM(c?.duration);
+    if (startMin !== null) cursor = startMin;
+    const end = cursor + durMin;
+    segments.push({ start: cursor, end, activity: String(c?.activity ?? c?.title ?? c?.activityCode ?? ""), dur: c?.duration ? String(c.duration) : "" });
+    cursor = end;
+  }
+
+  const rows: string[][] = [];
+  rows.push(["Violazione", "", "", "", ""]);
+  rows.push(["Violazione", at, "", "", String(v?.message ?? "")]);
+
+  if (tMin !== null) {
+    const wStart = Math.max(0, tMin - 120);
+    const wEnd = Math.min(24 * 60, tMin + 120);
+    rows.push(["Contesto (±2h)", "", "", "", ""]);
+    for (const s of segments) {
+      if (s.end <= wStart || s.start >= wEnd) continue;
+      rows.push([
+        "Contesto",
+        `${minutesToHHMM(s.start)}–${minutesToHHMM(s.end)}`,
+        s.activity,
+        s.dur,
+        "",
+      ]);
+    }
+  }
+
+  rows.push(["Giornata (tutti i record)", "", "", "", ""]);
+  for (const s of segments) {
+    rows.push([
+      "Giornata",
+      `${minutesToHHMM(s.start)}–${minutesToHHMM(s.end)}`,
+      s.activity,
+      s.dur,
+      "",
+    ]);
+  }
+
+  return {
+    title: `Dettaglio violazione pausa – ${at}`,
+    headers: ["Sezione", "Ora", "Attività", "Durata", "Note"],
+    rows,
+  };
+}
+
+export function build561Blocks(
+  c561: Reg561Report,
+  combinedData?: any
+): { type: any; text?: string; headers?: string[]; rows?: any[]; pageSize?: number }[] {
   const blocks: any[] = [];
 
   blocks.push({ type: "h1", text: "Reg. (CE) 561/2006 – Sintesi (calcolo da tachigrafo)" });
@@ -328,6 +451,7 @@ export function build561Blocks(c561: Reg561Report): { type: any; text?: string; 
           fmtMinutes(d.longestRestMinutes),
           s(d.dailyRestFlag || ""),
         ],
+        details: combinedData ? buildActivityDetailsTable(combinedData, String(d.date)) : undefined,
       })),
     });
   }
@@ -338,9 +462,28 @@ export function build561Blocks(c561: Reg561Report): { type: any; text?: string; 
       type: "table",
       pageSize: 30,
       headers: ["Settimana ISO", "Guida", "Violazione"],
-      rows: weekly.map((w: any) => ({
-        cells: [s(w.isoWeek), fmtMinutes(w.drivingMinutes), s(w.weeklyDrivingViolation || "")],
-      })),
+      rows: weekly.map((w: any) => {
+        const weekKey = String(w.isoWeek);
+        const daysInWeek = daily.filter((d) => isoWeekKey(String(d.date)) === weekKey);
+        const details = daysInWeek.length
+          ? {
+              title: `Dettaglio settimana ${weekKey}`,
+              headers: ["Data", "Guida", "10h?", "Riposo", "Violazione"],
+              rows: daysInWeek.map((d: any) => [
+                s(d.date),
+                fmtMinutes(d.drivingMinutes),
+                d.isExtendedTo10h ? "Sì" : "No",
+                s(d.dailyRestFlag || ""),
+                s(d.dailyDrivingViolation || ""),
+              ]),
+            }
+          : undefined;
+
+        return {
+          cells: [s(w.isoWeek), fmtMinutes(w.drivingMinutes), s(w.weeklyDrivingViolation || "")],
+          details,
+        };
+      }),
     });
   }
 
@@ -352,6 +495,7 @@ export function build561Blocks(c561: Reg561Report): { type: any; text?: string; 
       headers: ["Quando", "Guida da ultima pausa", "Nota"],
       rows: breakViolations.map((v: any) => ({
         cells: [s(v.at), fmtMinutes(v.drivingSinceLastBreakMinutes), s(v.message)],
+        details: combinedData ? buildBreakViolationDetails(combinedData, v) : undefined,
       })),
     });
   }
@@ -362,9 +506,21 @@ export function build561Blocks(c561: Reg561Report): { type: any; text?: string; 
       type: "table",
       pageSize: 30,
       headers: ["Finestra", "Guida", "Nota"],
-      rows: fortnightViolations.map((v: any) => ({
-        cells: [`${s(v.windowStart)} → ${s(v.windowEnd)}`, fmtMinutes(v.drivingMinutes), s(v.message)],
-      })),
+      rows: fortnightViolations.map((v: any) => {
+        const start = String(v.windowStart);
+        const end = String(v.windowEnd);
+        const days = daily.filter((d) => String(d.date) >= start && String(d.date) <= end);
+        return {
+          cells: [`${s(v.windowStart)} → ${s(v.windowEnd)}`, fmtMinutes(v.drivingMinutes), s(v.message)],
+          details: days.length
+            ? {
+                title: `Dettaglio finestra 14 giorni ${start} → ${end}`,
+                headers: ["Data", "Guida"],
+                rows: days.map((d: any) => [s(d.date), fmtMinutes(d.drivingMinutes)]),
+              }
+            : undefined,
+        };
+      }),
     });
   }
 
