@@ -27,6 +27,17 @@ function parseKm(v: any): number | null {
     return Number.isFinite(n) ? n : null;
 }
 
+function parseUseRange(v: any): { from?: string; to?: string } {
+    const txt = typeof v === "string" ? v : (v?.title ? String(v.title) : "");
+    if (!txt) return {};
+    // Example: "From 2024-01-01T00:00:00Z To 2024-01-02T00:00:00Z"
+    const m = txt.match(
+        /From\s+([0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[^ ]+)?)\s+To\s+([0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[^ ]+)?)/i
+    );
+    if (m) return { from: m[1], to: m[2] };
+    return {};
+}
+
 
 function toTimeMs(v: any): number | null {
     if (!v) return null;
@@ -205,6 +216,8 @@ function buildReportFromMerged(input: any): ReportDocument {
         ? String(normalized.entityType)
         : (isDriverFile ? "DRIVER_CARD" : "VEHICLE_UNIT");
 
+    const isVuFile = entityType === "VEHICLE_UNIT" || entityType === "VEHICLE";
+
     const id = combinedData?.Identification ?? {};
     const driverName = normalized?.driver?.name || toTitle(id?.cardHolderName);
     const driverCardNumber = normalized?.driver?.cardNumber || toTitle(id?.cardNumber);
@@ -232,10 +245,10 @@ function buildReportFromMerged(input: any): ReportDocument {
         ...strTable(
             kvRows([
                 ["Tipo file", entityType === "DRIVER_CARD" || entityType === "DRIVER" ? "Conducente" : entityType === "VEHICLE_UNIT" || entityType === "VEHICLE" ? "Veicolo" : entityType],
-                ["Conducente", driverName],
-                ["Numero carta", driverCardNumber],
-                ["Scadenza carta", cardExpiry],
-                ["Stato membro rilascio", issueCountry],
+                ["Conducente", isVuFile ? "—" : driverName],
+                ["Numero carta", isVuFile ? "—" : driverCardNumber],
+                ["Scadenza carta", isVuFile ? "—" : cardExpiry],
+                ["Stato membro rilascio", isVuFile ? "—" : issueCountry],
                 ["Veicoli (targa) presenti nel file", vehicleRegs.length ? vehicleRegs.join(", ") : "—"],
                 ["Periodo coperto (da attività)", [periodStart, periodEnd].filter(Boolean).join(" → ") || "—"],
                 ["Parser eseguiti", `${Number(input?.successCount ?? 0)} OK / ${Number(input?.failureCount ?? 0)} KO`],
@@ -243,6 +256,106 @@ function buildReportFromMerged(input: any): ReportDocument {
             30
         ),
     });
+
+    // --- Vehicle unit overview (vehicle files)
+    if (isVuFile) {
+        const ov = pickBlock(combinedData, "vu_overview");
+        const reg = toTitle(ov?.vehicle_registration_identification ?? ov?.vehicleRegistrationIdentification);
+        const vin = toTitle(ov?.vehicle_identification_number ?? ov?.vehicleIdentificationNumber);
+        const now = toTitle(ov?.current_date_time ?? ov?.currentDateTime);
+        const dlp = ov?.vu_downloadable_period ?? ov?.vuDownloadablePeriod;
+        const dlpStart = toTitle(dlp?.min_date ?? dlp?.minDate);
+        const dlpEnd = toTitle(dlp?.max_date ?? dlp?.maxDate);
+
+        blocks.push({ type: "h1", text: "Dati veicolo (unità veicolo)" });
+        blocks.push({
+            type: "table",
+            pageSize: 30,
+            headers: ["Voce", "Valore"],
+            rows: [
+                { cells: ["Targa", reg || "—"] },
+                { cells: ["VIN", vin || "—"] },
+                { cells: ["Data/ora corrente", now || "—"] },
+                { cells: ["Periodo scaricabile", [dlpStart, dlpEnd].filter(Boolean).join(" → ") || "—"] },
+            ],
+        });
+    }
+
+    // --- Vehicles (driver cards)
+    if (isDriverFile && vehicleRecords.length) {
+        // Group by registration
+        const byReg = new Map<string, any[]>();
+        for (const r of vehicleRecords) {
+            const reg = toTitle(r?.registration ?? r?.vehicleRegistration ?? r?.eventVehicleRegistration) || "—";
+            const arr = byReg.get(reg) ?? [];
+            arr.push(r);
+            byReg.set(reg, arr);
+        }
+
+        blocks.push({ type: "h1", text: "Veicoli presenti nel file" });
+        blocks.push({
+            type: "table",
+            pageSize: 30,
+            headers: ["Targa", "Nazione", "Primo utilizzo", "Ultimo utilizzo", "Km inizio", "Km fine", "Km"],
+            rows: Array.from(byReg.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([reg, recs]) => {
+                let nation: string | undefined;
+                let firstUse: string | undefined;
+                let lastUse: string | undefined;
+                let minOdo: number | null = null;
+                let maxOdo: number | null = null;
+
+                for (const r of recs) {
+                    const regObj = r?.registration ?? r?.vehicleRegistration ?? r?.eventVehicleRegistration;
+                    if (!nation) nation = toTitle(regObj?.vehicleRegistrationNation ?? regObj?.vehicle_registration_nation ?? regObj?.nation) || undefined;
+
+                    const range = parseUseRange(r?.vehicleUse);
+                    if (range.from) {
+                        if (!firstUse || range.from < firstUse) firstUse = range.from;
+                    }
+                    if (range.to) {
+                        if (!lastUse || range.to > lastUse) lastUse = range.to;
+                    }
+
+                    const ob = parseKm(r?.vehicleOdometerBegin);
+                    const oe = parseKm(r?.vehicleOdometerEnd);
+                    if (ob !== null) minOdo = minOdo === null ? ob : Math.min(minOdo, ob);
+                    if (oe !== null) maxOdo = maxOdo === null ? oe : Math.max(maxOdo, oe);
+                }
+
+                const dist = minOdo !== null && maxOdo !== null ? Math.max(0, maxOdo - minOdo) : null;
+
+                const detailsRows: string[][] = recs
+                    .map((r) => {
+                        const range = parseUseRange(r?.vehicleUse);
+                        return [
+                            s(range.from || ""),
+                            s(range.to || ""),
+                            s(r?.vehicleOdometerBegin),
+                            s(r?.vehicleOdometerEnd),
+                            s(r?.vuDataBlockCounter),
+                        ];
+                    })
+                    .sort((a, b) => (a[0] || "").localeCompare(b[0] || ""));
+
+                return {
+                    cells: [
+                        s(reg),
+                        s(nation || ""),
+                        s(firstUse ? firstUse.slice(0, 10) : ""),
+                        s(lastUse ? lastUse.slice(0, 10) : ""),
+                        minOdo === null ? "" : String(minOdo),
+                        maxOdo === null ? "" : String(maxOdo),
+                        dist === null ? "" : String(dist),
+                    ],
+                    details: {
+                        title: `Utilizzi veicolo: ${s(reg)}`,
+                        headers: ["Da", "A", "Km inizio", "Km fine", "Contatore blocco"],
+                        rows: detailsRows,
+                    },
+                };
+            })
+        });
+    }
 
     // Reg 561/2006 (driver files only)
     if (isDriverFile) {

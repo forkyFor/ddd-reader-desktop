@@ -18,6 +18,11 @@ export type NormalizedVehicle = {
   number?: string;
   firstSeen?: string;
   lastSeen?: string;
+  // Driver-card vehicle usage records (when available)
+  odometerBegin?: number;
+  odometerEnd?: number;
+  distanceKm?: number;
+  sessions?: number;
 };
 
 export type NormalizedEvent = {
@@ -52,6 +57,24 @@ function isObj(v: any): v is Record<string, any> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+function asNumber(v: any): number | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const m = String(v).match(/-?\d+(?:[.,]\d+)?/);
+  if (!m) return undefined;
+  const n = Number(m[0].replace(",", "."));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function parseUseRangeTitle(vehicleUse: any): { from?: string; to?: string } {
+  const t = toTitle(vehicleUse);
+  if (!t) return {};
+  // Common: "From 2013-01-10T17:33Z To 2013-01-11T13:46Z"
+  const m = t.match(/From\s+([^ ]+)\s+To\s+([^ ]+)/i);
+  if (m?.[1] && m?.[2]) return { from: m[1], to: m[2] };
+  return {};
+}
+
 export function toTitle(v: any): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v;
@@ -62,8 +85,12 @@ export function toTitle(v: any): string {
   if (typeof (v as any).title === "string") return (v as any).title;
 
   // Vehicle registration patterns
-  const nation = (v as any).vehicleRegistrationNation ?? (v as any).vehicle_registration_nation ?? (v as any).nation;
-  const num = (v as any).vehicleRegistrationNumber ?? (v as any).vehicle_registration_number ?? (v as any).number;
+  const regObj = (v as any).vehicle_registration_identification && isObj((v as any).vehicle_registration_identification)
+    ? (v as any).vehicle_registration_identification
+    : v;
+
+  const nation = (regObj as any).vehicleRegistrationNation ?? (regObj as any).vehicle_registration_nation ?? (regObj as any).nation;
+  const num = (regObj as any).vehicleRegistrationNumber ?? (regObj as any).vehicle_registration_number ?? (regObj as any).number;
   if (nation && num) return `${num} (${nation})`;
   if (num) return String(num);
 
@@ -155,6 +182,24 @@ export function normalizeMergedOutput(args: { combinedData: any; dddPath?: strin
     const end = toTitle(r?.vehicleLastUse ?? r?.lastUse ?? r?.last_seen);
     if (start && !existing.firstSeen) existing.firstSeen = start;
     if (end) existing.lastSeen = end;
+
+    // Odometers (if provided by the parser)
+    const odoBegin = asNumber(r?.vehicleOdometerBegin ?? r?.odometerBegin ?? r?.odometer_begin);
+    const odoEnd = asNumber(r?.vehicleOdometerEnd ?? r?.odometerEnd ?? r?.odometer_end);
+    if (odoBegin !== undefined) {
+      existing.odometerBegin = existing.odometerBegin === undefined ? odoBegin : Math.min(existing.odometerBegin, odoBegin);
+    }
+    if (odoEnd !== undefined) {
+      existing.odometerEnd = existing.odometerEnd === undefined ? odoEnd : Math.max(existing.odometerEnd, odoEnd);
+    }
+
+    existing.sessions = (existing.sessions ?? 0) + 1;
+
+    if (existing.odometerBegin !== undefined && existing.odometerEnd !== undefined) {
+      const dist = existing.odometerEnd - existing.odometerBegin;
+      if (Number.isFinite(dist) && dist >= 0) existing.distanceKm = dist;
+    }
+
     vehiclesByReg.set(reg, existing);
   }
 
