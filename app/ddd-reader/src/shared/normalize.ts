@@ -18,12 +18,32 @@ export type NormalizedVehicle = {
   number?: string;
   firstSeen?: string;
   lastSeen?: string;
-  // Driver-card vehicle usage records (when available)
+  vin?: string;
+  downloadableStart?: string;
+  downloadableEnd?: string;
   odometerBegin?: number;
   odometerEnd?: number;
   distanceKm?: number;
-  sessions?: number;
+  source?: string;
 };
+
+// Minimal mapping for tachograph "member state" numeric codes seen in samples.
+// (Can be extended as needed.)
+const MEMBER_STATE_CODE_TO_NAME: Record<string, string> = {
+  "26": "Italy",
+};
+
+function mapMemberState(v: any): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  const k = String(v);
+  return MEMBER_STATE_CODE_TO_NAME[k] ?? k;
+}
+
+function safeNum(v: any): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const n = Number(String(v ?? "").replace(",", "."));
+  return Number.isFinite(n) ? n : undefined;
+}
 
 export type NormalizedEvent = {
   when?: string;
@@ -57,24 +77,6 @@ function isObj(v: any): v is Record<string, any> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
-function asNumber(v: any): number | undefined {
-  if (v === null || v === undefined) return undefined;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  const m = String(v).match(/-?\d+(?:[.,]\d+)?/);
-  if (!m) return undefined;
-  const n = Number(m[0].replace(",", "."));
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function parseUseRangeTitle(vehicleUse: any): { from?: string; to?: string } {
-  const t = toTitle(vehicleUse);
-  if (!t) return {};
-  // Common: "From 2013-01-10T17:33Z To 2013-01-11T13:46Z"
-  const m = t.match(/From\s+([^ ]+)\s+To\s+([^ ]+)/i);
-  if (m?.[1] && m?.[2]) return { from: m[1], to: m[2] };
-  return {};
-}
-
 export function toTitle(v: any): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v;
@@ -85,13 +87,9 @@ export function toTitle(v: any): string {
   if (typeof (v as any).title === "string") return (v as any).title;
 
   // Vehicle registration patterns
-  const regObj = (v as any).vehicle_registration_identification && isObj((v as any).vehicle_registration_identification)
-    ? (v as any).vehicle_registration_identification
-    : v;
-
-  const nation = (regObj as any).vehicleRegistrationNation ?? (regObj as any).vehicle_registration_nation ?? (regObj as any).nation;
-  const num = (regObj as any).vehicleRegistrationNumber ?? (regObj as any).vehicle_registration_number ?? (regObj as any).number;
-  if (nation && num) return `${num} (${nation})`;
+  const nation = (v as any).vehicleRegistrationNation ?? (v as any).vehicle_registration_nation ?? (v as any).nation;
+  const num = (v as any).vehicleRegistrationNumber ?? (v as any).vehicle_registration_number ?? (v as any).number;
+  if (nation && num) return `${num} (${mapMemberState(nation)})`;
   if (num) return String(num);
 
   // Person name patterns
@@ -182,24 +180,6 @@ export function normalizeMergedOutput(args: { combinedData: any; dddPath?: strin
     const end = toTitle(r?.vehicleLastUse ?? r?.lastUse ?? r?.last_seen);
     if (start && !existing.firstSeen) existing.firstSeen = start;
     if (end) existing.lastSeen = end;
-
-    // Odometers (if provided by the parser)
-    const odoBegin = asNumber(r?.vehicleOdometerBegin ?? r?.odometerBegin ?? r?.odometer_begin);
-    const odoEnd = asNumber(r?.vehicleOdometerEnd ?? r?.odometerEnd ?? r?.odometer_end);
-    if (odoBegin !== undefined) {
-      existing.odometerBegin = existing.odometerBegin === undefined ? odoBegin : Math.min(existing.odometerBegin, odoBegin);
-    }
-    if (odoEnd !== undefined) {
-      existing.odometerEnd = existing.odometerEnd === undefined ? odoEnd : Math.max(existing.odometerEnd, odoEnd);
-    }
-
-    existing.sessions = (existing.sessions ?? 0) + 1;
-
-    if (existing.odometerBegin !== undefined && existing.odometerEnd !== undefined) {
-      const dist = existing.odometerEnd - existing.odometerBegin;
-      if (Number.isFinite(dist) && dist >= 0) existing.distanceKm = dist;
-    }
-
     vehiclesByReg.set(reg, existing);
   }
 
@@ -214,6 +194,93 @@ export function normalizeMergedOutput(args: { combinedData: any; dddPath?: strin
     }
   }
 
+  // -----------------------
+  // VEHICLE UNIT enrichment
+  // -----------------------
+
+  const pickVu = (base: string) =>
+    combinedData?.[`${base}_2_v2`] ?? combinedData?.[`${base}_2`] ?? combinedData?.[`${base}_1`] ?? combinedData?.[base];
+
+  const vuOverview = pickVu("vu_overview");
+  const vuTech = pickVu("vu_technical_data");
+  const vuActivities = pickVu("vu_activities");
+  const vuEventsFaults = pickVu("vu_events_and_faults");
+
+  // VU: vehicle identity from calibration records
+  if (entityType === "VEHICLE_UNIT") {
+    const techArr: any[] = Array.isArray(vuTech) ? vuTech : vuTech ? [vuTech] : [];
+    const calRecords: any[] = [];
+    for (const t of techArr) {
+      const cr = t?.vu_calibration_data?.vu_calibration_records;
+      if (Array.isArray(cr)) calRecords.push(...cr);
+    }
+
+    const latestCal = calRecords
+      .map((r) => ({ r, t: Date.parse(r?.new_time_value || r?.old_time_value || "") }))
+      .filter((x) => Number.isFinite(x.t))
+      .sort((a, b) => b.t - a.t)[0]?.r;
+
+    const regObj = latestCal?.vehicle_registration_identification;
+    const vin = typeof latestCal?.vehicle_identification_number === "string" ? latestCal.vehicle_identification_number : undefined;
+    const regNum = regObj?.vehicle_registration_number;
+    const regNation = regObj?.vehicle_registration_nation;
+
+    const regTitle = regNum
+      ? `${String(regNum).trim()} (${mapMemberState(regNation)})`
+      : undefined;
+
+    if (regTitle) {
+      const existing = vehiclesByReg.get(regTitle) ?? { registration: regTitle };
+      existing.number = existing.number ?? (regNum ? String(regNum) : undefined);
+      existing.nation = existing.nation ?? (regNation !== undefined ? mapMemberState(regNation) : undefined);
+      existing.vin = existing.vin ?? vin;
+      existing.source = existing.source ?? "VU.calibration";
+      vehiclesByReg.set(regTitle, existing);
+    } else if (vin) {
+      // no registration, but keep a placeholder vehicle
+      const key = `VIN ${vin}`;
+      const existing = vehiclesByReg.get(key) ?? { registration: key };
+      existing.vin = vin;
+      existing.source = existing.source ?? "VU.calibration";
+      vehiclesByReg.set(key, existing);
+    }
+
+    // VU: downloadable period + current time
+    const dStart = vuOverview?.vu_downloadable_period?.min_downloadable_time;
+    const dEnd = vuOverview?.vu_downloadable_period?.max_downloadable_time;
+    const currentDateTime = vuOverview?.current_date_time;
+
+    // VU: odometer / activity period from vu_activities
+    const actArr: any[] = Array.isArray(vuActivities) ? vuActivities : [];
+    const actTimes = actArr.map((a) => a?.time_real).filter((x) => typeof x === "string").sort();
+    const odoVals = actArr
+      .map((a) => safeNum(a?.odometer_value_midnight))
+      .filter((x): x is number => typeof x === "number")
+      .sort((a, b) => a - b);
+    const odometerBegin = odoVals.length ? odoVals[0] : undefined;
+    const odometerEnd = odoVals.length ? odoVals[odoVals.length - 1] : undefined;
+    const distanceKm =
+      typeof odometerBegin === "number" && typeof odometerEnd === "number" && odometerEnd >= odometerBegin
+        ? odometerEnd - odometerBegin
+        : undefined;
+
+    // Attach these to each known vehicle entry
+    for (const v of vehiclesByReg.values()) {
+      if (dStart) v.downloadableStart = v.downloadableStart ?? String(dStart);
+      if (dEnd) v.downloadableEnd = v.downloadableEnd ?? String(dEnd);
+      if (actTimes.length) {
+        v.firstSeen = v.firstSeen ?? actTimes[0];
+        v.lastSeen = v.lastSeen ?? actTimes[actTimes.length - 1];
+      }
+      if (typeof odometerBegin === "number") v.odometerBegin = v.odometerBegin ?? odometerBegin;
+      if (typeof odometerEnd === "number") v.odometerEnd = v.odometerEnd ?? odometerEnd;
+      if (typeof distanceKm === "number") v.distanceKm = v.distanceKm ?? distanceKm;
+      // Keep current time as a pseudo lastSeen if missing
+      if (!v.lastSeen && currentDateTime) v.lastSeen = String(currentDateTime);
+    }
+  }
+
+  // Recompute vehicles after potential VU enrichment
   const vehicles = [...vehiclesByReg.values()].sort((a, b) => (a.registration ?? "").localeCompare(b.registration ?? ""));
 
   // Events/Faults
@@ -236,13 +303,64 @@ export function normalizeMergedOutput(args: { combinedData: any; dddPath?: strin
     raw: f,
   }));
 
-  // Period covered from driver activity (if present)
-  const dailyMap = combinedData?.CardDriverActivity?.CardActivityDailyRecord?.dailyRecords;
-  const dates = dailyMap && typeof dailyMap === "object" ? Object.keys(dailyMap).sort() : [];
-  const periodStart = dates[0];
-  const periodEnd = dates.length ? dates[dates.length - 1] : undefined;
+  // VU events/faults
+  if (entityType === "VEHICLE_UNIT") {
+    const efArr: any[] = Array.isArray(vuEventsFaults) ? vuEventsFaults : vuEventsFaults ? [vuEventsFaults] : [];
+    for (const ef of efArr) {
+      const evRecs = ef?.vu_event_data?.vu_event_records;
+      if (Array.isArray(evRecs)) {
+        for (const r of evRecs) {
+          const when = toTitle(r?.event_begin_time ?? r?.event_time) || undefined;
+          const t = r?.event_type;
+          const type = t !== undefined ? `EventType ${String(t)}` : undefined;
+          events.push({ when, type, vehicle: vehicles[0]?.registration, source: "VU.event", raw: r });
+        }
+      }
 
-  // Quick week coverage hint
+      const ftRecs = ef?.vu_fault_data?.vu_fault_records;
+      if (Array.isArray(ftRecs)) {
+        for (const r of ftRecs) {
+          const when = toTitle(r?.fault_begin_time ?? r?.fault_time) || undefined;
+          const t = r?.fault_type;
+          const type = t !== undefined ? `FaultType ${String(t)}` : undefined;
+          faults.push({ when, type, vehicle: vehicles[0]?.registration, source: "VU.fault", raw: r });
+        }
+      }
+    }
+  }
+
+  // Period covered
+  let periodStart: string | undefined;
+  let periodEnd: string | undefined;
+  let dates: string[] = [];
+
+  // Driver-card: from activity map
+  const dailyMap = combinedData?.CardDriverActivity?.CardActivityDailyRecord?.dailyRecords;
+  if (dailyMap && typeof dailyMap === "object") {
+    dates = Object.keys(dailyMap).sort();
+    periodStart = dates[0];
+    periodEnd = dates.length ? dates[dates.length - 1] : undefined;
+  }
+
+  // Vehicle-unit: from activities dates or downloadable window
+  if (entityType === "VEHICLE_UNIT") {
+    const vuOverview = combinedData?.vu_overview_2_v2 ?? combinedData?.vu_overview_2 ?? combinedData?.vu_overview_1;
+    const dStart = vuOverview?.vu_downloadable_period?.min_downloadable_time;
+    const dEnd = vuOverview?.vu_downloadable_period?.max_downloadable_time;
+    const actArr: any[] = Array.isArray(combinedData?.vu_activities_2_v2)
+      ? combinedData.vu_activities_2_v2
+      : Array.isArray(combinedData?.vu_activities_2)
+        ? combinedData.vu_activities_2
+        : Array.isArray(combinedData?.vu_activities_1)
+          ? combinedData.vu_activities_1
+          : [];
+    const actTimes = actArr.map((a) => a?.time_real).filter((x) => typeof x === "string").sort();
+    periodStart = (actTimes[0] ?? dStart) ? String(actTimes[0] ?? dStart) : periodStart;
+    periodEnd = (actTimes.length ? actTimes[actTimes.length - 1] : dEnd) ? String(actTimes.length ? actTimes[actTimes.length - 1] : dEnd) : periodEnd;
+    // Use date parts for weeksCovered
+    dates = actTimes.map((t) => String(t).slice(0, 10));
+  }
+
   const weeksCovered = dates.length ? Array.from(new Set(dates.map(isoWeekKey))).sort() : [];
 
   return {

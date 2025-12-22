@@ -27,17 +27,6 @@ function parseKm(v: any): number | null {
     return Number.isFinite(n) ? n : null;
 }
 
-function parseUseRange(v: any): { from?: string; to?: string } {
-    const txt = typeof v === "string" ? v : (v?.title ? String(v.title) : "");
-    if (!txt) return {};
-    // Example: "From 2024-01-01T00:00:00Z To 2024-01-02T00:00:00Z"
-    const m = txt.match(
-        /From\s+([0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[^ ]+)?)\s+To\s+([0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[^ ]+)?)/i
-    );
-    if (m) return { from: m[1], to: m[2] };
-    return {};
-}
-
 
 function toTimeMs(v: any): number | null {
     if (!v) return null;
@@ -205,7 +194,9 @@ export function buildReport(input: any): ReportDocument {
 function buildReportFromMerged(input: any): ReportDocument {
     const blocks: ReportDocument["blocks"] = [];
     const combinedData = input?.combinedData ?? {};
-    const normalized = input?.normalized ?? normalizeMergedOutput({ combinedData });
+    // Always recompute a fresh normalization from combinedData so the report
+    // is stable even when opening old saved JSON with missing/empty `normalized`.
+    const normalized = normalizeMergedOutput({ combinedData });
 
     // Header
     blocks.push({ type: "title", text: "Report Tachigrafo Digitale (.ddd)" });
@@ -216,26 +207,25 @@ function buildReportFromMerged(input: any): ReportDocument {
         ? String(normalized.entityType)
         : (isDriverFile ? "DRIVER_CARD" : "VEHICLE_UNIT");
 
-    const isVuFile = entityType === "VEHICLE_UNIT" || entityType === "VEHICLE";
-
     const id = combinedData?.Identification ?? {};
     const driverName = normalized?.driver?.name || toTitle(id?.cardHolderName);
     const driverCardNumber = normalized?.driver?.cardNumber || toTitle(id?.cardNumber);
     const cardExpiry = normalized?.driver?.cardExpiryDate || toTitle(id?.cardExpiryDate);
     const issueCountry = normalized?.driver?.cardIssuingMemberState || toTitle(id?.cardIssuingMemberState);
 
-    // Vehicles used (from card file)
-    const vehicleRecords: any[] = Array.isArray(combinedData?.CardVehiclesUsed?.CardVehicleRecord?.records)
-        ? combinedData.CardVehiclesUsed.CardVehicleRecord.records
-        : [];
-    const vehicleRegs = Array.from(
-        new Set(vehicleRecords.map((r) => toTitle(r?.registration ?? r?.vehicleRegistration)).filter(Boolean))
-    );
+    // Vehicles present (driver card: vehicles used; vehicle unit: vehicle identity)
+    const vehicleRegs = (normalized?.vehicles ?? []).map((v: any) => v?.registration).filter(Boolean);
 
     // Coverage
-    const dailyTotals = deriveDailyTotalsFromCombinedData(combinedData);
-    const periodStart = dailyTotals.length ? dailyTotals[0].date : undefined;
-    const periodEnd = dailyTotals.length ? dailyTotals[dailyTotals.length - 1].date : undefined;
+    const dailyTotals = isDriverFile ? deriveDailyTotalsFromCombinedData(combinedData) : [];
+    const periodStart = normalized?.periodStart || (dailyTotals.length ? dailyTotals[0].date : undefined);
+    const periodEnd = normalized?.periodEnd || (dailyTotals.length ? dailyTotals[dailyTotals.length - 1].date : undefined);
+
+    const primaryVehicle = (normalized?.vehicles ?? [])[0];
+    const vuOverview = combinedData?.vu_overview_2_v2 ?? combinedData?.vu_overview_2 ?? combinedData?.vu_overview_1;
+    const currentDateTime = vuOverview?.current_date_time;
+    const downloadableStart = primaryVehicle?.downloadableStart ?? vuOverview?.vu_downloadable_period?.min_downloadable_time;
+    const downloadableEnd = primaryVehicle?.downloadableEnd ?? vuOverview?.vu_downloadable_period?.max_downloadable_time;
 
     blocks.push({ type: "h1", text: "Sintesi" });
     blocks.push({
@@ -245,10 +235,12 @@ function buildReportFromMerged(input: any): ReportDocument {
         ...strTable(
             kvRows([
                 ["Tipo file", entityType === "DRIVER_CARD" || entityType === "DRIVER" ? "Conducente" : entityType === "VEHICLE_UNIT" || entityType === "VEHICLE" ? "Veicolo" : entityType],
-                ["Conducente", isVuFile ? "—" : driverName],
-                ["Numero carta", isVuFile ? "—" : driverCardNumber],
-                ["Scadenza carta", isVuFile ? "—" : cardExpiry],
-                ["Stato membro rilascio", isVuFile ? "—" : issueCountry],
+                ["Conducente", entityType === "DRIVER_CARD" ? (driverName || "—") : "—"],
+                ["Numero carta", entityType === "DRIVER_CARD" ? (driverCardNumber || "—") : "—"],
+                ["Scadenza carta", entityType === "DRIVER_CARD" ? (cardExpiry || "—") : "—"],
+                ["Stato membro rilascio", entityType === "DRIVER_CARD" ? (issueCountry || "—") : "—"],
+                ["Veicolo (targa)", entityType === "VEHICLE_UNIT" ? (primaryVehicle?.registration || "—") : "—"],
+                ["VIN", entityType === "VEHICLE_UNIT" ? (primaryVehicle?.vin || "—") : "—"],
                 ["Veicoli (targa) presenti nel file", vehicleRegs.length ? vehicleRegs.join(", ") : "—"],
                 ["Periodo coperto (da attività)", [periodStart, periodEnd].filter(Boolean).join(" → ") || "—"],
                 ["Parser eseguiti", `${Number(input?.successCount ?? 0)} OK / ${Number(input?.failureCount ?? 0)} KO`],
@@ -257,104 +249,64 @@ function buildReportFromMerged(input: any): ReportDocument {
         ),
     });
 
-    // --- Vehicle unit overview (vehicle files)
-    if (isVuFile) {
-        const ov = pickBlock(combinedData, "vu_overview");
-        const reg = toTitle(ov?.vehicle_registration_identification ?? ov?.vehicleRegistrationIdentification);
-        const vin = toTitle(ov?.vehicle_identification_number ?? ov?.vehicleIdentificationNumber);
-        const now = toTitle(ov?.current_date_time ?? ov?.currentDateTime);
-        const dlp = ov?.vu_downloadable_period ?? ov?.vuDownloadablePeriod;
-        const dlpStart = toTitle(dlp?.min_date ?? dlp?.minDate);
-        const dlpEnd = toTitle(dlp?.max_date ?? dlp?.maxDate);
-
+    // VEHICLE UNIT: show readable vehicle identity and calibration overview
+    if (entityType === "VEHICLE_UNIT") {
         blocks.push({ type: "h1", text: "Dati veicolo (unità veicolo)" });
         blocks.push({
             type: "table",
-            pageSize: 30,
             headers: ["Voce", "Valore"],
-            rows: [
-                { cells: ["Targa", reg || "—"] },
-                { cells: ["VIN", vin || "—"] },
-                { cells: ["Data/ora corrente", now || "—"] },
-                { cells: ["Periodo scaricabile", [dlpStart, dlpEnd].filter(Boolean).join(" → ") || "—"] },
-            ],
+            pageSize: 30,
+            ...strTable(
+                kvRows([
+                    ["Targa", primaryVehicle?.registration || "—"],
+                    ["VIN", primaryVehicle?.vin || "—"],
+                    ["Contachilometri (inizio)", primaryVehicle?.odometerBegin ?? "—"],
+                    ["Contachilometri (fine)", primaryVehicle?.odometerEnd ?? "—"],
+                    ["Distanza stimata", primaryVehicle?.distanceKm ?? "—"],
+                    ["Data/ora corrente", currentDateTime || "—"],
+                    ["Periodo scaricabile", [downloadableStart, downloadableEnd].filter(Boolean).join(" → ") || "—"],
+                ]),
+                30
+            ),
         });
-    }
 
-    // --- Vehicles (driver cards)
-    if (isDriverFile && vehicleRecords.length) {
-        // Group by registration
-        const byReg = new Map<string, any[]>();
-        for (const r of vehicleRecords) {
-            const reg = toTitle(r?.registration ?? r?.vehicleRegistration ?? r?.eventVehicleRegistration) || "—";
-            const arr = byReg.get(reg) ?? [];
-            arr.push(r);
-            byReg.set(reg, arr);
+        // Calibration records (most useful source for registration/VIN)
+        const tech = combinedData?.vu_technical_data_2_v2 ?? combinedData?.vu_technical_data_2 ?? combinedData?.vu_technical_data_1;
+        const techArr: any[] = Array.isArray(tech) ? tech : tech ? [tech] : [];
+        const calRecs: any[] = [];
+        for (const t of techArr) {
+            const cr = t?.vu_calibration_data?.vu_calibration_records;
+            if (Array.isArray(cr)) calRecs.push(...cr);
         }
 
-        blocks.push({ type: "h1", text: "Veicoli presenti nel file" });
-        blocks.push({
-            type: "table",
-            pageSize: 30,
-            headers: ["Targa", "Nazione", "Primo utilizzo", "Ultimo utilizzo", "Km inizio", "Km fine", "Km"],
-            rows: Array.from(byReg.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([reg, recs]) => {
-                let nation: string | undefined;
-                let firstUse: string | undefined;
-                let lastUse: string | undefined;
-                let minOdo: number | null = null;
-                let maxOdo: number | null = null;
-
-                for (const r of recs) {
-                    const regObj = r?.registration ?? r?.vehicleRegistration ?? r?.eventVehicleRegistration;
-                    if (!nation) nation = toTitle(regObj?.vehicleRegistrationNation ?? regObj?.vehicle_registration_nation ?? regObj?.nation) || undefined;
-
-                    const range = parseUseRange(r?.vehicleUse);
-                    if (range.from) {
-                        if (!firstUse || range.from < firstUse) firstUse = range.from;
-                    }
-                    if (range.to) {
-                        if (!lastUse || range.to > lastUse) lastUse = range.to;
-                    }
-
-                    const ob = parseKm(r?.vehicleOdometerBegin);
-                    const oe = parseKm(r?.vehicleOdometerEnd);
-                    if (ob !== null) minOdo = minOdo === null ? ob : Math.min(minOdo, ob);
-                    if (oe !== null) maxOdo = maxOdo === null ? oe : Math.max(maxOdo, oe);
-                }
-
-                const dist = minOdo !== null && maxOdo !== null ? Math.max(0, maxOdo - minOdo) : null;
-
-                const detailsRows: string[][] = recs
-                    .map((r) => {
-                        const range = parseUseRange(r?.vehicleUse);
-                        return [
-                            s(range.from || ""),
-                            s(range.to || ""),
-                            s(r?.vehicleOdometerBegin),
-                            s(r?.vehicleOdometerEnd),
-                            s(r?.vuDataBlockCounter),
-                        ];
+        if (calRecs.length) {
+            blocks.push({ type: "h1", text: "Calibrazioni (da unità veicolo)" });
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Quando", "Officina", "Targa", "VIN", "Km (old→new)", "Prossima"],
+                rows: calRecs
+                    .map((r: any) => {
+                        const regObj = r?.vehicle_registration_identification;
+                        const targa = regObj ? toTitle(regObj) : "";
+                        const vin = s(r?.vehicle_identification_number);
+                        const when = s(r?.new_time_value ?? r?.old_time_value);
+                        const wk = s(r?.workshop_name);
+                        const kmOld = r?.old_odometer_value ?? "";
+                        const kmNew = r?.new_odometer_value ?? "";
+                        const km = (kmOld || kmNew) ? `${s(kmOld)} → ${s(kmNew)}` : "";
+                        const next = s(r?.next_calibration_date);
+                        return {
+                            cells: [when, wk, targa || "—", vin || "—", km || "—", next || "—"],
+                            details: {
+                                title: `Calibrazione: ${when || "—"}`,
+                                headers: ["Campo", "Valore"],
+                                rows: Object.entries(r ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                            }
+                        };
                     })
-                    .sort((a, b) => (a[0] || "").localeCompare(b[0] || ""));
-
-                return {
-                    cells: [
-                        s(reg),
-                        s(nation || ""),
-                        s(firstUse ? firstUse.slice(0, 10) : ""),
-                        s(lastUse ? lastUse.slice(0, 10) : ""),
-                        minOdo === null ? "" : String(minOdo),
-                        maxOdo === null ? "" : String(maxOdo),
-                        dist === null ? "" : String(dist),
-                    ],
-                    details: {
-                        title: `Utilizzi veicolo: ${s(reg)}`,
-                        headers: ["Da", "A", "Km inizio", "Km fine", "Contatore blocco"],
-                        rows: detailsRows,
-                    },
-                };
-            })
-        });
+            });
+        }
     }
 
     // Reg 561/2006 (driver files only)
@@ -363,8 +315,8 @@ function buildReportFromMerged(input: any): ReportDocument {
         blocks.push(...(build561Blocks(c561, combinedData) as any));
     }
 
-    // Daily totals table
-    if (dailyTotals.length) {
+    // Daily totals table (driver)
+    if (dailyTotals.length && entityType === "DRIVER_CARD") {
         blocks.push({ type: "h1", text: "Totali giornalieri (da tachigrafo)" });
         blocks.push({
             type: "table",
@@ -383,13 +335,11 @@ function buildReportFromMerged(input: any): ReportDocument {
         });
     }
 
-    // Events/Faults quick summary
-    const eventCount = Array.isArray(combinedData?.CardEventData?.CardEventRecord?.records)
-        ? combinedData.CardEventData.CardEventRecord.records.length
-        : 0;
-    const faultCount = Array.isArray(combinedData?.CardFaultData?.CardFaultRecord?.records)
-        ? combinedData.CardFaultData.CardFaultRecord.records.length
-        : 0;
+    // Events/Faults (driver + vehicle)
+    const normEvents: any[] = Array.isArray(normalized?.events) ? normalized.events : [];
+    const normFaults: any[] = Array.isArray(normalized?.faults) ? normalized.faults : [];
+    const eventCount = normEvents.length;
+    const faultCount = normFaults.length;
 
     if (eventCount || faultCount) {
         blocks.push({ type: "h1", text: "Eventi e anomalie" });
@@ -403,41 +353,35 @@ function buildReportFromMerged(input: any): ReportDocument {
             ]
         });
 
-        const evRecords: any[] = Array.isArray(combinedData?.CardEventData?.CardEventRecord?.records)
-            ? combinedData.CardEventData.CardEventRecord.records
-            : [];
-        if (evRecords.length) {
+        if (normEvents.length) {
             blocks.push({ type: "h1", text: "Dettaglio eventi" });
             blocks.push({
                 type: "table",
                 pageSize: 30,
                 headers: ["Quando", "Tipo", "Veicolo"],
-                rows: evRecords.map((e: any) => ({
-                    cells: [s(e?.eventTime), s(e?.eventType), s(e?.eventVehicleRegistration)],
+                rows: normEvents.map((e: any) => ({
+                    cells: [s(e?.when), s(e?.type), s(e?.vehicle)],
                     details: {
-                        title: `Evento: ${s(e?.eventType) || "—"}`,
+                        title: `Evento: ${s(e?.type) || "—"}`,
                         headers: ["Campo", "Valore"],
-                        rows: Object.entries(e ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                        rows: Object.entries(e?.raw ?? e ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
                     }
                 }))
             });
         }
 
-        const ftRecords: any[] = Array.isArray(combinedData?.CardFaultData?.CardFaultRecord?.records)
-            ? combinedData.CardFaultData.CardFaultRecord.records
-            : [];
-        if (ftRecords.length) {
+        if (normFaults.length) {
             blocks.push({ type: "h1", text: "Dettaglio guasti" });
             blocks.push({
                 type: "table",
                 pageSize: 30,
                 headers: ["Quando", "Tipo", "Veicolo"],
-                rows: ftRecords.map((f: any) => ({
-                    cells: [s(f?.faultTime ?? f?.eventTime), s(f?.faultType ?? f?.eventType), s(f?.faultVehicleRegistration ?? f?.eventVehicleRegistration)],
+                rows: normFaults.map((f: any) => ({
+                    cells: [s(f?.when), s(f?.type), s(f?.vehicle)],
                     details: {
-                        title: `Guasto: ${s(f?.faultType ?? f?.eventType) || "—"}`,
+                        title: `Guasto: ${s(f?.type) || "—"}`,
                         headers: ["Campo", "Valore"],
-                        rows: Object.entries(f ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                        rows: Object.entries(f?.raw ?? f ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
                     }
                 }))
             });
