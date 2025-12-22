@@ -1,10 +1,10 @@
+import { app } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import { spawn } from "node:child_process";
-
-import { normalizeParsedDDD } from "../shared/dddNormalize";
+import { tachogramUploadAndWait } from "./external/tachogramApi";
 
 export interface ParseProgress {
     percent: number;
@@ -22,53 +22,24 @@ export interface IDDDParser {
 // Helpers (Paths)
 // ----------------------------------------------------------------------------
 
-/**
- * Resolve the application root in a way that works both:
- * - inside Electron (dev + packaged)
- * - from Node scripts (batch tests)
- *
- * In packaged Electron, `process.resourcesPath` exists and we ship tools in `resourcesPath/tools`.
- * In dev, we assume the project root contains the `tools/` folder.
- */
-function resolveAppRoot(): string {
-    const resourcesPath = (process as any).resourcesPath as string | undefined;
-    if (resourcesPath && fsSync.existsSync(path.join(resourcesPath, "tools"))) {
-        return resourcesPath;
-    }
-
-    const cwd = process.cwd();
-    if (fsSync.existsSync(path.join(cwd, "tools"))) return cwd;
-
-    // Fallback: walk upwards from current file
-    let dir = __dirname;
-    for (let i = 0; i < 8; i++) {
-        if (fsSync.existsSync(path.join(dir, "tools"))) return dir;
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-    }
-    return cwd;
-}
-
-function getToolPath(filename: string): string {
-    const root = resolveAppRoot();
-    return path.join(root, "tools", filename);
-}
-
 function getReadEsmWrapperPath() {
-    return getToolPath("readesm-wrapper.mjs");
+    if (app.isPackaged) return path.join(process.resourcesPath, "tools", "readesm-wrapper.mjs");
+    return path.join(app.getAppPath(), "tools", "readesm-wrapper.mjs");
 }
 
 function getDddParserExePath() {
-    return getToolPath("dddparser.exe");
+    if (app.isPackaged) return path.join(process.resourcesPath, "tools", "dddparser.exe");
+    return path.join(app.getAppPath(), "tools", "dddparser.exe");
 }
 
 function getTachographGoExePath() {
-    return getToolPath("tachograph-go.exe");
+    if (app.isPackaged) return path.join(process.resourcesPath, "tools", "tachograph-go.exe");
+    return path.join(app.getAppPath(), "tools", "tachograph-go.exe");
 }
 
 function getTachoparserExePath() {
-    return getToolPath("tachoparser.exe");
+    if (app.isPackaged) return path.join(process.resourcesPath, "tools", "tachoparser.exe");
+    return path.join(app.getAppPath(), "tools", "tachoparser.exe");
 }
 
 // ----------------------------------------------------------------------------
@@ -262,7 +233,9 @@ export class PythonDumperParser implements IDDDParser {
     async parse(dddPath: string, onProgress?: ProgressCallback): Promise<any> {
         // Check for python
         const pythonExe = "python"; // Assume in PATH
-        const script = getToolPath("simple_dump.py");
+        const script = app.isPackaged
+            ? path.join(process.resourcesPath, "tools", "simple_dump.py")
+            : path.join(app.getAppPath(), "tools", "simple_dump.py");
 
         try {
             await fs.stat(script);
@@ -416,9 +389,11 @@ export interface MergedParserOutput {
     timestamp: string;
     parsers: Record<string, ParserResult>;
     combinedData: any;
-    normalized?: any;
     successCount: number;
     failureCount: number;
+    external?: {
+        tachogram?: any;
+    };
 }
 
 export class DDDParserPipeline {
@@ -489,8 +464,25 @@ export class DDDParserPipeline {
             return deepMerge(merged, data);
         }, {});
 
-        // Normalize into a predictable JSON structure (driver/vehicle) + compute 561/2006 summaries.
-        const normalized = normalizeParsedDDD(combinedData, dddPath);
+        // Optional: external API enrichment (Tachogram/Tachoweb).
+        // Enable by setting: TACHOGRAM_API_BASE_URL and TACHOGRAM_API_KEY
+        let external: any = undefined;
+        const apiKey = process.env.TACHOGRAM_API_KEY;
+        const baseUrl = process.env.TACHOGRAM_API_BASE_URL;
+        if (apiKey && baseUrl) {
+            try {
+                if (onProgress) onProgress({ percent: 95, stage: "External enrichment: Tachogram API..." });
+                const res = await tachogramUploadAndWait({
+                    apiKey,
+                    baseUrl,
+                    filePath: dddPath,
+                    timeoutMs: Number(process.env.TACHOGRAM_API_TIMEOUT_MS ?? 30000),
+                });
+                external = { tachogram: res };
+            } catch (e: any) {
+                external = { tachogram: { error: e?.message ?? String(e) } };
+            }
+        }
 
         if (onProgress) onProgress({ percent: 100, stage: `Completed: ${successCount} succeeded, ${failureCount} failed` });
 
@@ -501,9 +493,9 @@ export class DDDParserPipeline {
             timestamp: new Date().toISOString(),
             parsers: parserResults,
             combinedData,
-            normalized,
             successCount,
-            failureCount
+            failureCount,
+            external,
         };
     }
 }

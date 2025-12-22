@@ -1,4 +1,6 @@
 import type { ReportDocument, ReportTableRow } from "./reportModel";
+import { build561Blocks, computeReg561FromCombinedData, deriveDailyTotalsFromCombinedData } from "./reg561";
+import { fmtMinutes } from "./timeUtils";
 
 const PAGE_SIZE_DEFAULT = 50;
 
@@ -158,55 +160,142 @@ function flattenMaybeArrayOfRecords(container: any, key: string): any[] {
 ---------------------------- */
 
 export function buildReport(input: any): ReportDocument {
-    // Check if this is a merged parser output
-    let json = input;
-    const normalized = input?.normalized; // produced by src/shared/dddNormalize.ts via the main pipeline
-
+    // If this is a merged output (pipeline), we build a normative / user-friendly report.
     if (input?.merged === true && input?.combinedData) {
-        // This is the new merged output from all parsers
-        console.log('[buildReport] Processing merged output from multiple parsers');
-        console.log(`[buildReport] Success: ${input.successCount}, Failures: ${input.failureCount}`);
-
-        // Use combinedData for building the report
-        json = input.combinedData;
-    } else {
-        // Backward compatibility: unwrap old wrapper structure
-        json = unwrapIfNeeded(input);
+        return buildReportFromMerged(input);
     }
 
-    let doc: ReportDocument;
+    // Backward compatibility: unwrap old wrapper structure
+    const json = unwrapIfNeeded(input);
 
     // Check for DRIVER CARDS first (more common and to avoid false positives)
-    if (isReadEsmShape(json)) doc = buildReportFromReadEsm(json);
-    else if (isDddParserShape(json)) doc = buildReportFromDddParser(json);
+    if (isReadEsmShape(json)) return buildReportFromReadEsm(json);
+    if (isDddParserShape(json)) return buildReportFromDddParser(json);
+
     // Then check for VEHICLE UNITS
-    else if (isVehicleUnitShape(json)) doc = buildReportFromVehicleUnit(json);
+    if (isVehicleUnitShape(json)) return buildReportFromVehicleUnit(json);
+
     // fallback minimale: se non riconosciuto
-    else {
-        doc = {
-            blocks: [
-                { type: "title", text: "DDD Report" },
-                { type: "p", text: "Formato non riconosciuto per la formattazione a report. Mostra JSON grezzo finché non mappiamo questo tipo." }
+    return {
+        blocks: [
+            { type: "title", text: "DDD Report" },
+            { type: "p", text: "Formato non riconosciuto per la formattazione a report. Mostra JSON grezzo finché non mappiamo questo tipo." }
+        ]
+    };
+}
+
+// ---------------------------
+// MERGED (pipeline) builder
+// ---------------------------
+
+function buildReportFromMerged(input: any): ReportDocument {
+    const blocks: ReportDocument["blocks"] = [];
+    const combinedData = input?.combinedData ?? {};
+    const normalized = input?.normalized ?? {};
+
+    // Header
+    blocks.push({ type: "title", text: "Report Tachigrafo Digitale (.ddd)" });
+
+    // Identify entity (driver / vehicle)
+    const isDriverFile = !!combinedData?.CardDriverActivity;
+    const entityType = normalized?.entityType && normalized.entityType !== "UNKNOWN"
+        ? String(normalized.entityType)
+        : (isDriverFile ? "DRIVER" : "VEHICLE");
+
+    const id = combinedData?.Identification ?? {};
+    const driverName = normalized?.driver?.name || id?.cardHolderName;
+    const driverCardNumber = normalized?.driver?.cardNumber || id?.cardNumber;
+    const cardExpiry = normalized?.driver?.cardExpiryDate || id?.cardExpiryDate;
+    const issueCountry = id?.cardIssuingMemberState || normalized?.driver?.cardIssuingMemberState;
+
+    // Vehicles used (from card file)
+    const vehicleRecords: any[] = Array.isArray(combinedData?.CardVehiclesUsed?.CardVehicleRecord?.records)
+        ? combinedData.CardVehiclesUsed.CardVehicleRecord.records
+        : [];
+    const vehicleRegs = Array.from(
+        new Set(vehicleRecords.map((r) => s(r?.registration)).filter(Boolean))
+    );
+
+    // Coverage
+    const dailyTotals = deriveDailyTotalsFromCombinedData(combinedData);
+    const periodStart = dailyTotals.length ? dailyTotals[0].date : undefined;
+    const periodEnd = dailyTotals.length ? dailyTotals[dailyTotals.length - 1].date : undefined;
+
+    blocks.push({ type: "h1", text: "Sintesi" });
+    blocks.push({
+        type: "table",
+        headers: ["Voce", "Valore"],
+        pageSize: 30,
+        ...strTable(
+            kvRows([
+                ["Tipo file", entityType === "DRIVER" ? "Conducente" : entityType === "VEHICLE" ? "Veicolo" : entityType],
+                ["Conducente", driverName],
+                ["Numero carta", driverCardNumber],
+                ["Scadenza carta", cardExpiry],
+                ["Stato membro rilascio", issueCountry],
+                ["Veicoli (targa) presenti nel file", vehicleRegs.length ? vehicleRegs.join(", ") : "—"],
+                ["Periodo coperto (da attività)", [periodStart, periodEnd].filter(Boolean).join(" → ") || "—"],
+                ["Parser eseguiti", `${Number(input?.successCount ?? 0)} OK / ${Number(input?.failureCount ?? 0)} KO`],
+            ]),
+            30
+        ),
+    });
+
+    // Reg 561/2006 (driver files only)
+    if (isDriverFile) {
+        const c561 = computeReg561FromCombinedData(combinedData);
+        blocks.push(...(build561Blocks(c561) as any));
+    }
+
+    // Daily totals table
+    if (dailyTotals.length) {
+        blocks.push({ type: "h1", text: "Totali giornalieri (da tachigrafo)" });
+        blocks.push({
+            type: "table",
+            pageSize: 40,
+            headers: ["Data", "Guida", "Lavoro", "Disponibilità", "Riposo", "Km"],
+            rows: dailyTotals.map((d) => ({
+                cells: [
+                    s(d.date),
+                    fmtMinutes(d.drivingMinutes),
+                    fmtMinutes(d.workMinutes),
+                    fmtMinutes(d.availabilityMinutes),
+                    fmtMinutes(d.restMinutes),
+                    d.distanceKm === undefined ? "" : String(d.distanceKm),
+                ]
+            })),
+        });
+    }
+
+    // Events/Faults quick summary
+    const eventCount = Array.isArray(combinedData?.CardEventData?.CardEventRecord?.records)
+        ? combinedData.CardEventData.CardEventRecord.records.length
+        : 0;
+    const faultCount = Array.isArray(combinedData?.CardFaultData?.CardFaultRecord?.records)
+        ? combinedData.CardFaultData.CardFaultRecord.records.length
+        : 0;
+
+    if (eventCount || faultCount) {
+        blocks.push({ type: "h1", text: "Eventi e anomalie (conteggi)" });
+        blocks.push({
+            type: "table",
+            pageSize: 30,
+            headers: ["Voce", "Valore"],
+            rows: [
+                { cells: ["Eventi", String(eventCount)] },
+                { cells: ["Guasti", String(faultCount)] },
             ]
-        };
+        });
     }
 
-    // Append Regulation 561/2006 summary if we have a normalized compliance report.
-    if (normalized?.compliance561) {
-        doc.blocks.push(...build561Blocks(normalized.compliance561));
-    }
+    blocks.push({
+        type: "p",
+        text:
+            "Nota: per verifiche ispettive e contestazioni è necessario un calcolo completo (riposi giornalieri/settimanali, riduzioni, compensazioni, eventuali deroghe). Questo report è una sintesi leggibile basata sui dati presenti nel file .ddd.",
+    });
 
-    return doc;
+    return { blocks };
 }
-
-function fmtHM(mins: number | undefined): string {
-    if (typeof mins !== "number") return "";
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
-    return `${h}h ${String(m).padStart(2, "0")}m`;
-}
-
-
 
 /* ---------------------------
    READESM (PRIMO PLUGIN)
@@ -783,222 +872,4 @@ function buildReportFromVehicleUnit(data: any): ReportDocument {
 
     return { blocks };
 }
-
-/* ---------------------------
-   REG. (CE) 561/2006 – SUMMARY
-   (generated from normalized.compliance561)
----------------------------- */
-
-function fmtMinutes(mins?: number | null): string {
-    if (mins === null || mins === undefined) return "";
-    const sign = mins < 0 ? "-" : "";
-    const m = Math.abs(mins);
-    const hh = Math.floor(m / 60);
-    const mm = Math.round(m % 60);
-    return `${sign}${hh}h${String(mm).padStart(2, "0")}`;
-}
-
-function build561BlocksStime(c561: any): ReportDocument["blocks"] {
-    const blocks: ReportDocument["blocks"] = [];
-
-    blocks.push({ type: "h1", text: "Reg. (CE) 561/2006 - Sintesi (stime)" });
-
-    blocks.push({
-        type: "p",
-        text:
-            `Periodo analizzato: ${s(c561?.periodStart || "").slice(0, 10)} → ${s(c561?.periodEnd || "").slice(0, 10)}. ` +
-            `Le verifiche sono basate su giorni di calendario (UTC) e servono come indicazione rapida.`
-    });
-
-    const daily: any[] = Array.isArray(c561?.daily) ? c561.daily : [];
-    const weekly: any[] = Array.isArray(c561?.weekly) ? c561.weekly : [];
-    const breakViolations: any[] = Array.isArray(c561?.breakViolations) ? c561.breakViolations : [];
-    const fortnightViolations: any[] = Array.isArray(c561?.fortnightViolations) ? c561.fortnightViolations : [];
-
-    const dailyViolCount = daily.filter((d) => d?.dailyDrivingViolation || d?.dailyRestFlag === "INSUFFICIENT").length;
-    const weeklyViolCount = weekly.filter((w) => w?.weeklyDrivingViolation).length;
-
-    blocks.push({
-        type: "table",
-        headers: ["Voce", "Valore"],
-        ...strTable(
-            kvRows([
-                ["Giorni con potenziale violazione (guida/rest)", dailyViolCount],
-                ["Settimane con potenziale violazione (56h)", weeklyViolCount],
-                ["Violazioni pause (4h30 / 45m)", breakViolations.length],
-                ["Violazioni 2 settimane (90h su 14 giorni)", fortnightViolations.length],
-            ]),
-            999
-        )
-    });
-
-    if (daily.length) {
-        blocks.push({ type: "h1", text: "Dettaglio giornaliero" });
-        blocks.push({
-            type: "table",
-            headers: ["Data", "Guida", "Estensione 10h", "Riposo (max)", "Flag riposo", "Note"],
-            pageSize: 30,
-            rows: daily.map((d) => ({
-                cells: [
-                    s(d?.date),
-                    fmtHM(d?.drivingMinutes),
-                    d?.isExtendedTo10h ? "SI" : "NO",
-                    fmtHM(d?.longestRestMinutes),
-                    s(d?.dailyRestFlag),
-                    s(d?.dailyDrivingViolation || ""),
-                ]
-            }))
-        });
-    }
-
-    if (weekly.length) {
-        blocks.push({ type: "h1", text: "Dettaglio settimanale" });
-        blocks.push({
-            type: "table",
-            headers: ["ISO Week", "Guida", "Note"],
-            pageSize: 30,
-            rows: weekly.map((w) => ({
-                cells: [s(w?.isoWeek), fmtHM(w?.drivingMinutes), s(w?.weeklyDrivingViolation || "")]
-            }))
-        });
-    }
-
-    if (breakViolations.length) {
-        blocks.push({ type: "h1", text: "Violazioni pause" });
-        blocks.push({
-            type: "table",
-            headers: ["Quando", "Guida continuativa", "Descrizione"],
-            pageSize: 30,
-            rows: breakViolations.map((v) => ({
-                cells: [s(v?.at), fmtHM(v?.drivingSinceLastBreakMinutes), s(v?.message)]
-            }))
-        });
-    }
-
-    if (fortnightViolations.length) {
-        blocks.push({ type: "h1", text: "Violazioni 90h / 2 settimane" });
-        blocks.push({
-            type: "table",
-            headers: ["Da", "A", "Guida", "Descrizione"],
-            pageSize: 30,
-            rows: fortnightViolations.map((v) => ({
-                cells: [s(v?.windowStart), s(v?.windowEnd), fmtHM(v?.drivingMinutes), s(v?.message)]
-            }))
-        });
-    }
-
-    return blocks;
-}
-
-function build561BlocksTacho(c561: any): ReportDocument["blocks"] {
-    const blocks: ReportDocument["blocks"] = [];
-
-    blocks.push({ type: "h1", text: "Reg. (CE) 561/2006 – Sintesi (calcolo da tachigrafo)" });
-
-    const period = [c561?.periodStart, c561?.periodEnd].filter(Boolean).join(" → ");
-    if (period) blocks.push({ type: "p", text: `Periodo analizzato: ${period}` });
-
-    const daily = Array.isArray(c561?.daily) ? c561.daily : [];
-    const weekly = Array.isArray(c561?.weekly) ? c561.weekly : [];
-    const breakViolations = Array.isArray(c561?.breakViolations) ? c561.breakViolations : [];
-    const fortnightViolations = Array.isArray(c561?.fortnightViolations) ? c561.fortnightViolations : [];
-
-    const dailyDrivingViol = daily.filter((d: any) => !!d.dailyDrivingViolation).length;
-    const dailyRestInsuff = daily.filter((d: any) => d.dailyRestFlag === "INSUFFICIENT").length;
-    const weeklyViol = weekly.filter((w: any) => !!w.weeklyDrivingViolation).length;
-
-    blocks.push({
-        type: "table",
-        pageSize: 30,
-        headers: ["Voce", "Valore"],
-        ...strTable(
-            kvRows([
-                ["Giorni analizzati", daily.length],
-                ["Violazioni guida giornaliera", dailyDrivingViol],
-                ["Giorni con riposo insufficiente", dailyRestInsuff],
-                ["Settimane con violazione guida", weeklyViol],
-                ["Violazioni pause (4h30)", breakViolations.length],
-                ["Violazioni 14 giorni (90h)", fortnightViolations.length],
-            ]),
-            30
-        ),
-    });
-
-    if (daily.length) {
-        blocks.push({ type: "h1", text: "Dettaglio giornaliero (approssimazione su giorni di calendario UTC)" });
-        blocks.push({
-            type: "table",
-            pageSize: 40,
-            headers: ["Data", "Guida", "10h?", "Violazione guida", "Riposo max", "Riposo"],
-            rows: daily.map((d: any) => ({
-                cells: [
-                    s(d.date),
-                    fmtMinutes(d.drivingMinutes),
-                    d.isExtendedTo10h ? "Sì" : "No",
-                    s(d.dailyDrivingViolation || ""),
-                    fmtMinutes(d.longestRestMinutes),
-                    s(d.dailyRestFlag || ""),
-                ]
-            }))
-        });
-    }
-
-    if (weekly.length) {
-        blocks.push({ type: "h1", text: "Dettaglio settimanale" });
-        blocks.push({
-            type: "table",
-            pageSize: 30,
-            headers: ["Settimana ISO", "Guida", "Violazione"],
-            rows: weekly.map((w: any) => ({
-                cells: [s(w.isoWeek), fmtMinutes(w.drivingMinutes), s(w.weeklyDrivingViolation || "")]
-            }))
-        });
-    }
-
-    if (breakViolations.length) {
-        blocks.push({ type: "h1", text: "Violazioni pause (Art. 7 – guida continuativa)" });
-        blocks.push({
-            type: "table",
-            pageSize: 30,
-            headers: ["Quando", "Guida da ultima pausa", "Nota"],
-            rows: breakViolations.map((v: any) => ({
-                cells: [s(v.at), fmtMinutes(v.drivingSinceLastBreakMinutes), s(v.message)]
-            }))
-        });
-    }
-
-    if (fortnightViolations.length) {
-        blocks.push({ type: "h1", text: "Violazioni su 14 giorni (Art. 6 – 90h)" });
-        blocks.push({
-            type: "table",
-            pageSize: 30,
-            headers: ["Finestra", "Guida", "Nota"],
-            rows: fortnightViolations.map((v: any) => ({
-                cells: [
-                    `${s(v.windowStart)} → ${s(v.windowEnd)}`,
-                    fmtMinutes(v.drivingMinutes),
-                    s(v.message),
-                ]
-            }))
-        });
-    }
-
-    if (Array.isArray(c561?.notes) && c561.notes.length) {
-        blocks.push({ type: "h1", text: "Note sul calcolo" });
-        for (const n of c561.notes) blocks.push({ type: "p", text: s(n) });
-    }
-
-    return blocks;
-}
-
-/**
- * Wrapper: scegli quale versione usare.
- * Se non hai un flag oggi, puoi lasciare sempre quella "Tacho".
- */
-function build561Blocks(c561: any): ReportDocument["blocks"] {
-    // esempio: se c561.calculationMode === "ESTIMATE" usa Stime, altrimenti Tacho
-    const mode = s(c561?.calculationMode || "").toUpperCase();
-    return mode === "ESTIMATE" ? build561BlocksStime(c561) : build561BlocksTacho(c561);
-}
-
 

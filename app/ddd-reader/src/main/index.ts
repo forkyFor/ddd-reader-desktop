@@ -73,6 +73,40 @@ ipcMain.handle("ddd:openFile", async () => {
 });
 
 // ----------------------
+// IPC: Open JSON file/folder (out_json)
+// ----------------------
+
+ipcMain.handle("ddd:openJsonFile", async () => {
+  const res = await dialog.showOpenDialog({
+    properties: ["openFile"],
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (res.canceled || res.filePaths.length === 0) return null;
+  return res.filePaths[0];
+});
+
+ipcMain.handle("ddd:openJsonFolder", async () => {
+  const res = await dialog.showOpenDialog({
+    properties: ["openDirectory"],
+  });
+  if (res.canceled || res.filePaths.length === 0) return null;
+  return res.filePaths[0];
+});
+
+ipcMain.handle("ddd:listJsonFiles", async (_evt, folderPath: string) => {
+  const entries = await fs.readdir(folderPath, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".json"))
+    .map((e) => join(folderPath, e.name))
+    .sort();
+});
+
+ipcMain.handle("ddd:readJsonFile", async (_evt, filePath: string) => {
+  const raw = await fs.readFile(filePath, "utf-8");
+  return JSON.parse(raw);
+});
+
+// ----------------------
 // IPC: Parse (chain A -> B)
 // ----------------------
 

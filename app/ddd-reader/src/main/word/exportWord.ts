@@ -1,5 +1,16 @@
 import fs from "node:fs/promises";
-import { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun, HeadingLevel } from "docx";
+import {
+    Document,
+    Packer,
+    Paragraph,
+    Table,
+    TableRow,
+    TableCell,
+    TextRun,
+    HeadingLevel,
+    WidthType,
+    TableLayoutType,
+} from "docx";
 
 import { buildReport } from "../../shared/buildReport";
 import type { ReportBlock, ReportDocument, ReportTableRow } from "../../shared/reportModel";
@@ -26,6 +37,8 @@ function makeTable(headers: string[], rows: ReportTableRow[]) {
     );
 
     return new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        layout: TableLayoutType.AUTOFIT,
         rows: [headerRow, ...bodyRows],
     });
 }

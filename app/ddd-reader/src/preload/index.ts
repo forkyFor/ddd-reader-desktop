@@ -3,6 +3,10 @@ import { electronAPI } from "@electron-toolkit/preload";
 
 const api = {
   openDddFile: () => ipcRenderer.invoke("ddd:openFile"),
+  openJsonFile: () => ipcRenderer.invoke("ddd:openJsonFile"),
+  openJsonFolder: () => ipcRenderer.invoke("ddd:openJsonFolder"),
+  listJsonFiles: (folderPath: string) => ipcRenderer.invoke("ddd:listJsonFiles", folderPath),
+  readJsonFile: (filePath: string) => ipcRenderer.invoke("ddd:readJsonFile", filePath),
   parseDdd: (dddPath: string) => ipcRenderer.invoke("ddd:parse", dddPath),
   exportWord: (json: any) => ipcRenderer.invoke("ddd:exportWord", json),
   exportJson: (json: any) => ipcRenderer.invoke("ddd:exportJson", json),
