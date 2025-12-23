@@ -110,9 +110,11 @@ function buildHtml(payload: RecordPdfPayload): string {
                 <div class="sigLine"></div>
                 <div class="sigLbl">Luogo e Data</div>
             </div>
-            <div class="sigCol">
+            <div class="sigCol sigColRight">
                 <div class="sigLine"></div>
                 <div class="sigLbl">Firma</div>
+                <div class="stampBoxBottom"></div>
+                <div class="stampLblBottom">Timbro aziendale</div>
             </div>
         </div>`
         : "";
@@ -131,8 +133,9 @@ function buildHtml(payload: RecordPdfPayload): string {
     .meta { font-size: 12px; margin: 0 0 14px 0; }
     .metaRow { display: flex; gap: 18px; margin: 4px 0; }
     .metaRow b { width: 110px; display: inline-block; }
-    .stampBox { position: absolute; right: 16mm; top: 28mm; width: 70mm; height: 30mm; border: 1px dashed #777; }
-    .stampLbl { position: absolute; right: 16mm; top: 59mm; width: 70mm; text-align: center; font-size: 10px; color: #444; }
+    /* Timbro: in basso sotto la firma (come da fac-simile) */
+    .stampBoxBottom { margin: 14px auto 0; width: 70mm; height: 30mm; border: 1px dashed #777; }
+    .stampLblBottom { width: 70mm; margin: 2px auto 0; text-align: center; font-size: 10px; color: #444; }
     .legal { font-style: italic; font-size: 12px; line-height: 1.35; }
     p { font-size: 12px; line-height: 1.35; margin: 6px 0; }
     .tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -142,16 +145,14 @@ function buildHtml(payload: RecordPdfPayload): string {
     .cell-icon img { width: 12px; height: 12px; }
     .sp { height: 8px; }
     .footer { margin-top: 18px; text-align: center; font-weight: 600; }
-    .sigWrap { margin-top: 30px; display: flex; justify-content: space-between; gap: 30px; }
+    .sigWrap { margin-top: 30px; display: flex; justify-content: space-between; gap: 30px; page-break-inside: avoid; }
     .sigCol { width: 45%; text-align: center; }
+    .sigColRight { text-align: center; }
     .sigLine { border-bottom: 1px solid #999; height: 22px; }
     .sigLbl { font-size: 11px; color: #333; margin-top: 6px; }
   </style>
 </head>
 <body>
-  <div class="stampBox"></div>
-  <div class="stampLbl">Timbro aziendale</div>
-
   <h1>${esc(payload.title)}</h1>
 
   <div class="meta">
