@@ -103,6 +103,11 @@ function buildHtml(payload: RecordPdfPayload): string {
     const tables = (payload.tables ?? []).map((t) => tableHtml(t)).join("<div class='sp'></div>");
 
     const footerNote = payload.footerNote ? `<p class="footer">${esc(payload.footerNote)}</p>` : "";
+
+    // Fac-simile (allegato): dichiarazione presa visione, sotto al tabulato e prima delle firme.
+    const acknowledgement = payload.requireSignature
+        ? `<p class="ack">Il conducente dichiara di aver preso nota dell’infrazione/evento in oggetto</p>`
+        : "";
     const signature = payload.requireSignature
         ? `
         <div class="sigWrap">
@@ -145,6 +150,7 @@ function buildHtml(payload: RecordPdfPayload): string {
     .cell-icon img { width: 12px; height: 12px; }
     .sp { height: 8px; }
     .footer { margin-top: 18px; text-align: center; font-weight: 600; }
+    .ack { margin-top: 18px; text-align: center; font-weight: 600; }
     .sigWrap { margin-top: 30px; display: flex; justify-content: space-between; gap: 30px; page-break-inside: avoid; }
     .sigCol { width: 45%; text-align: center; }
     .sigColRight { text-align: center; }
@@ -172,6 +178,7 @@ function buildHtml(payload: RecordPdfPayload): string {
   ${tables ? `<h2>Tabulato eventi</h2>${tables}` : ""}
 
   ${footerNote}
+  ${acknowledgement}
   ${signature}
 </body>
 </html>`;

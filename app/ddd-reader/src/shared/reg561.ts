@@ -317,6 +317,57 @@ function buildActivityDetailsTable(combinedData: any, date: string): { title: st
   const changes = getActivityChangesForDate(combinedData, date);
   if (!changes.length) return undefined;
 
+  const isoToIt = (isoDate: string): string => {
+    const m = String(isoDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return String(isoDate || "");
+    return `${m[3]}/${m[2]}/${m[1]}`;
+  };
+
+  const addDays = (isoDate: string, days: number): string => {
+    try {
+      const d = new Date(`${isoDate}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    } catch {
+      return isoDate;
+    }
+  };
+
+  const activityIt = (raw: string): string => {
+    const s = String(raw ?? "").toLowerCase();
+    if (!s) return "Sconosciuto";
+    if (s.includes("driv") || s.includes("guida")) return "Guida";
+    if (s.includes("work") || s.includes("lavor")) return "Lavoro";
+    if (s.includes("availability") || s.includes("dispon")) return "Disponibilità";
+    if (s.includes("break") || s.includes("rest") || s.includes("riposo") || s.includes("pausa")) return "Riposo";
+    return "Sconosciuto";
+  };
+
+  const cardInserted = (slotStatus: string): "Inserita" | "Non Inserita" | "—" => {
+    const s = String(slotStatus ?? "").toLowerCase();
+    if (!s) return "—";
+    if (s.includes("not inserted") || s.includes("withdrawn") || s.includes("non inser")) return "Non Inserita";
+    return "Inserita";
+  };
+
+  const slotLabel = (slotStatus: string): string => {
+    const s = String(slotStatus ?? "").toLowerCase();
+    if (!s) return "—";
+    if (s.includes("co-driver") || s.includes("codriver") || s.includes("co-driver slot") || s.includes("second")) return "Secondo conducente";
+    if (s.includes("driver slot") || s.includes("autista") || s.includes("driver")) return "Autista";
+    return "—";
+  };
+
+  const isMultiPresence = (changes ?? []).some((c: any) => String(c?.["slot status"] ?? "").toLowerCase().includes("co-driver"));
+  const stato = isMultiPresence ? "Multipresenza" : "Singolo";
+
+  const vehicleForDate = (() => {
+    const recs = combinedData?.CardVehiclesUsed?.CardVehicleRecord?.records;
+    if (!Array.isArray(recs)) return "";
+    const r = recs.find((x: any) => String(x?.vehicleUse ?? "").includes(date));
+    return String(r?.registration?.vehicleRegistrationNumber ?? r?.registration?.title ?? "");
+  })();
+
   // Build a best-effort timeline with start/end.
   let cursor = 0;
   const rows: string[][] = [];
@@ -327,20 +378,51 @@ function buildActivityDetailsTable(combinedData: any, date: string): { title: st
     if (startMin !== null) cursor = startMin;
     const endMin = cursor + dur;
     const activityRaw = String(c?.activity ?? c?.title ?? c?.activityCode ?? "");
-    const activity = iconizeActivityLabel(activityRaw);
+    const actIt = activityIt(activityRaw);
+    const activity = iconizeActivityLabel(actIt);
+
+    const dayOffsetEnd = endMin >= 24 * 60 ? Math.floor(endMin / (24 * 60)) : 0;
+    const startDate = date;
+    const endDate = dayOffsetEnd ? addDays(date, dayOffsetEnd) : date;
+
+    const startLocal = `${isoToIt(startDate)} ${minutesToHHMM(cursor)}`;
+    const endLocal = `${isoToIt(endDate)} ${minutesToHHMM(endMin)}`;
+
+    // UTC: best-effort. (I dati origine spesso non espongono offset locale, quindi usiamo ISO Z come riferimento.)
+    const startUtc = `${isoToIt(startDate)} ${minutesToHHMM(cursor)}`;
+    const endUtc = `${isoToIt(endDate)} ${minutesToHHMM(endMin)}`;
+
+    const slotStatus = String((c as any)?.["slot status"] ?? "");
+
     rows.push([
-      minutesToHHMM(cursor),
-      minutesToHHMM(endMin),
       activity,
+      startLocal,
+      endLocal,
+      startUtc,
+      endUtc,
       c?.duration ? String(c.duration) : "",
-      c?.activityCode !== undefined ? String(c.activityCode) : "",
+      cardInserted(slotStatus),
+      slotLabel(slotStatus),
+      stato,
+      vehicleForDate || "—",
     ]);
     cursor = endMin;
   }
 
   return {
     title: `Attività (dettaglio) – ${date}`,
-    headers: ["Da", "A", "Attività", "Durata", "Codice"],
+    headers: [
+      "Tipo Attività",
+      "Inizio",
+      "Fine",
+      "Inizio (UTC)",
+      "Fine (UTC)",
+      "Durata",
+      "Carta",
+      "Slot",
+      "Stato",
+      "Veicolo",
+    ],
     rows,
   };
 }
