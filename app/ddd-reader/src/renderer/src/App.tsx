@@ -217,14 +217,14 @@ export default function App() {
           Seleziona .ddd
         </button>
         <button onClick={onParse} disabled={!dddPath || loading}>
-          Parse
+          Analizza
         </button>
-        <button onClick={onOpenJsonFile} disabled={loading}>
+        {/*  <button onClick={onOpenJsonFile} disabled={loading}>
           Apri JSON (singolo)
         </button>
         <button onClick={onOpenJsonFolder} disabled={loading}>
           Apri cartella out_json
-        </button>
+        </button> */}
         <button onClick={onExportWord} disabled={!parsed || loading}>
           Export Word
         </button>
@@ -268,7 +268,7 @@ export default function App() {
         )}
 
         <div style={{ flex: "1 1 auto", minWidth: 720 }}>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          {/* <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
             <button onClick={() => setView("REPORT")} disabled={!parsed}>
               Report
             </button>
@@ -278,7 +278,7 @@ export default function App() {
             <button onClick={() => setView("JSON")} disabled={!parsed}>
               JSON completo
             </button>
-          </div>
+          </div> */}
 
           {!parsed ? (
             <div style={{ fontSize: 13, opacity: 0.85 }}>

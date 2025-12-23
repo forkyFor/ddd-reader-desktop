@@ -251,6 +251,19 @@ function buildReportFromMerged(input: any): ReportDocument {
         ),
     });
 
+    // Reg 561/2006 (driver files only)
+    if (isDriverFile) {
+        const c561 = computeReg561FromCombinedData(combinedData);
+        blocks.push(
+            ...(build561Blocks(c561, combinedData, {
+                companyName: undefined,
+                driverName: entityType === "DRIVER_CARD" ? driverName : undefined,
+                driverCardNumber: entityType === "DRIVER_CARD" ? driverCardNumber : undefined,
+                vehicle: entityType === "VEHICLE_UNIT" ? (primaryVehicle?.registration || vehicleRegs?.[0]) : vehicleRegs?.[0],
+            }) as any)
+        );
+    }
+
 
     // DRIVER CARD: dettaglio conducente, attività e luoghi
     if (entityType === "DRIVER_CARD") {
@@ -489,7 +502,7 @@ function buildReportFromMerged(input: any): ReportDocument {
                     })
             });
         }
-                // Utilizzo scomparti (slot 1/2) - carte inserite nella VU
+        // Utilizzo scomparti (slot 1/2) - carte inserite nella VU
         const acts = combinedData?.vu_activities_2_v2 ?? combinedData?.vu_activities_2 ?? combinedData?.vu_activities_1;
         const actsArr: any[] = Array.isArray(acts) ? acts : acts ? [acts] : [];
         const iwRecords: any[] = [];
@@ -547,9 +560,9 @@ function buildReportFromMerged(input: any): ReportDocument {
         const lockBox = ov?.vu_company_locks_record_array ?? ov?.vu_company_locks_data ?? ov?.companyLocks;
         const lockRecords: any[] =
             Array.isArray(lockBox) ? lockBox :
-            Array.isArray(lockBox?.records) ? lockBox.records :
-            Array.isArray(lockBox?.vu_company_locks_records) ? lockBox.vu_company_locks_records :
-            [];
+                Array.isArray(lockBox?.records) ? lockBox.records :
+                    Array.isArray(lockBox?.vu_company_locks_records) ? lockBox.vu_company_locks_records :
+                        [];
 
         if (lockRecords.length) {
             blocks.push({ type: "h1", text: "Blocchi aziendali (Company Lock)" });
@@ -574,18 +587,7 @@ function buildReportFromMerged(input: any): ReportDocument {
         }
     }
 
-    // Reg 561/2006 (driver files only)
-    if (isDriverFile) {
-        const c561 = computeReg561FromCombinedData(combinedData);
-        blocks.push(
-            ...(build561Blocks(c561, combinedData, {
-                companyName: undefined,
-                driverName: entityType === "DRIVER_CARD" ? driverName : undefined,
-                driverCardNumber: entityType === "DRIVER_CARD" ? driverCardNumber : undefined,
-                vehicle: entityType === "VEHICLE_UNIT" ? (primaryVehicle?.registration || vehicleRegs?.[0]) : vehicleRegs?.[0],
-            }) as any)
-        );
-    }
+
 
     // Totali giornalieri (sempre visibile per carta conducente)
     if (entityType === "DRIVER_CARD") {
@@ -651,10 +653,10 @@ function buildReportFromMerged(input: any): ReportDocument {
                     const t = String(e?.type || "").toLowerCase();
                     const hint =
                         t.includes("senza carta") || t.includes("without card") ? "Possibile infrazione: guida senza carta (uso improprio della carta)." :
-                        (t.includes("inser") && t.includes("guida")) ? "Possibile infrazione: inserimento/uso carta durante la guida." :
-                        (t.includes("veloc") || t.includes("overspeed")) ? "Possibile infrazione: eccesso di velocità (>1 minuto)." :
-                        (t.includes("sicurez") || t.includes("security") || t.includes("manom") || t.includes("tamper")) ? "Possibile infrazione: evento di sicurezza/manomissione." :
-                        "";
+                            (t.includes("inser") && t.includes("guida")) ? "Possibile infrazione: inserimento/uso carta durante la guida." :
+                                (t.includes("veloc") || t.includes("overspeed")) ? "Possibile infrazione: eccesso di velocità (>1 minuto)." :
+                                    (t.includes("sicurez") || t.includes("security") || t.includes("manom") || t.includes("tamper")) ? "Possibile infrazione: evento di sicurezza/manomissione." :
+                                        "";
                     return {
                         cells: [s(e?.when), iconizeEventLabel(s(e?.type)), s(e?.vehicle)],
                         actions: [

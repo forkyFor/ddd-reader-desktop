@@ -7,6 +7,31 @@ import { parseIconToken } from "../../shared/iconTokens";
 
 type PdfTable = { title?: string; headers: string[]; rows: string[][] };
 
+/**
+ * Il fac-simile richiede il tabulato senza la colonna "Veicolo".
+ * Per sicurezza la rimuoviamo lato template PDF, indipendentemente da come viene composto a monte.
+ */
+function stripVehicleColumn(t: PdfTable): PdfTable {
+    const headers = Array.isArray(t?.headers) ? t.headers : [];
+    if (!headers.length) return t;
+
+    const removeIdx: number[] = [];
+    headers.forEach((h, i) => {
+        const k = String(h ?? "").trim().toLowerCase();
+        if (k === "veicolo" || k.includes("veicolo")) removeIdx.push(i);
+    });
+    if (!removeIdx.length) return t;
+
+    const keep = headers.map((_, i) => i).filter((i) => !removeIdx.includes(i));
+    if (!keep.length) return t;
+
+    return {
+        ...t,
+        headers: keep.map((i) => headers[i]),
+        rows: (t.rows ?? []).map((r) => keep.map((i) => String((r ?? [])[i] ?? ""))),
+    };
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ICON_DATA_URI_CACHE: Record<string, string | null> = {};
@@ -78,9 +103,10 @@ function nowItalian(): string {
 }
 
 function tableHtml(t: PdfTable): string {
-    const title = t.title ? `<h3>${esc(t.title)}</h3>` : "";
-    const head = `<tr>${(t.headers ?? []).map((h) => `<th>${esc(h)}</th>`).join("")}</tr>`;
-    const body = (t.rows ?? [])
+    const tt = stripVehicleColumn(t);
+    const title = tt.title ? `<h3>${esc(tt.title)}</h3>` : "";
+    const head = `<tr>${(tt.headers ?? []).map((h) => `<th>${esc(h)}</th>`).join("")}</tr>`;
+    const body = (tt.rows ?? [])
         .map((r) => `<tr>${(r ?? []).map((c) => `<td>${renderCellHtml(String(c ?? ""))}</td>`).join("")}</tr>`)
         .join("");
     return `${title}<table class="tbl"><thead>${head}</thead><tbody>${body}</tbody></table>`;
