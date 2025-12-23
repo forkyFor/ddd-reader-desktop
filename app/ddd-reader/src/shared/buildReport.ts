@@ -251,6 +251,186 @@ function buildReportFromMerged(input: any): ReportDocument {
         ),
     });
 
+
+    // DRIVER CARD: dettaglio conducente, attività e luoghi
+    if (entityType === "DRIVER_CARD") {
+        // Identificazione conducente
+        blocks.push({ type: "h1", text: "Dati conducente (carta conducente)" });
+        blocks.push({
+            type: "table",
+            headers: ["Voce", "Valore"],
+            pageSize: 30,
+            ...strTable(
+                kvRows([
+                    ["Cognome e nome", driverName || "—"],
+                    ["Numero carta", driverCardNumber || "—"],
+                    ["Scadenza carta", cardExpiry || "—"],
+                    ["Stato membro di rilascio", issueCountry || "—"],
+                ]),
+                30
+            ),
+        });
+
+        // Attività giornaliere (dettaglio)
+        const dailyMap = combinedData?.CardDriverActivity?.CardActivityDailyRecord?.dailyRecords;
+        const dailyRecords: Array<{ date: string; rec: any }> = [];
+        if (dailyMap && typeof dailyMap === "object") {
+            for (const [date, rec] of Object.entries(dailyMap as any)) {
+                if (!rec) continue;
+                dailyRecords.push({ date: String(date), rec });
+            }
+        }
+        dailyRecords.sort((a, b) => a.date.localeCompare(b.date));
+
+        blocks.push({ type: "h1", text: "Attività giornaliere (dettaglio carta)" });
+
+        const manualRows: ReportTableRow[] = [];
+        if (!dailyRecords.length) {
+            blocks.push({ type: "p", text: "Nessun dato disponibile." });
+        } else {
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Data", "Km", "Segmenti", "Manuali"],
+                rows: dailyRecords.map(({ date, rec }) => {
+                    const segs: any[] = rec?.ActivityChangeInfo?.records ?? [];
+                    const distance = parseKm(rec?.activityDayDistance);
+                    const manualSegs = segs.filter((s: any) => String(s?.["slot status"] ?? "").toLowerCase().includes("manual"));
+                    // raccolgo manuali per tabella dedicata
+                    for (const m of manualSegs) {
+                        manualRows.push({
+                            cells: [
+                                date,
+                                iconizeActivityLabel(s(m?.activity || m?.title || "")),
+                                s(m?.from),
+                                s(m?.duration),
+                                s(m?.["slot status"] || ""),
+                            ],
+                            details: {
+                                title: `Inserimento manuale: ${date}`,
+                                headers: ["Campo", "Valore"],
+                                rows: flattenToItalianRows(m ?? {}),
+                            }
+                        });
+                    }
+
+                    const detailRows = segs.map((seg: any) => [
+                        s(seg?.from),
+                        iconizeActivityLabel(s(seg?.activity || seg?.title || "")),
+                        s(seg?.duration),
+                        s(seg?.["slot status"] || ""),
+                    ]);
+
+                    return {
+                        cells: [
+                            date,
+                            distance === null ? "—" : String(distance),
+                            String(segs.length),
+                            String(manualSegs.length),
+                        ],
+                        details: {
+                            title: `Dettaglio attività: ${date}`,
+                            headers: ["Da", "Attività", "Durata", "Note"],
+                            rows: detailRows,
+                        }
+                    };
+                })
+            });
+        }
+
+        // Inserimenti manuali (sempre visibile)
+        blocks.push({ type: "h1", text: "Inserimenti manuali" });
+        if (!manualRows.length) {
+            blocks.push({ type: "p", text: "Nessun dato disponibile." });
+        } else {
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Data", "Attività", "Da", "Durata", "Note"],
+                rows: manualRows,
+            });
+        }
+
+        // Luoghi / Paesi (stime) + chilometraggio (da PlaceDailyWorkPeriod)
+        const placeRecs: any[] = combinedData?.CardPlaceDailyWorkPeriod?.PlaceRecord?.records ?? [];
+        const placeArr = Array.isArray(placeRecs) ? placeRecs : [];
+
+        blocks.push({ type: "h1", text: "Luoghi e confini (stime)" });
+        if (!placeArr.length) {
+            blocks.push({ type: "p", text: "Nessun dato disponibile." });
+        } else {
+            const sortedPlaces = [...placeArr].sort((a, b) => String(a?.entryTime ?? "").localeCompare(String(b?.entryTime ?? "")));
+
+            // Attraversamenti di confine (stima: cambio paese tra record consecutivi)
+            const crossings: any[] = [];
+            let prevCountry: string | null = null;
+            for (const r of sortedPlaces) {
+                const c = s(r?.dailyWorkPeriodCountry || "").trim();
+                const t = s(r?.entryTime || "");
+                if (prevCountry && c && c !== prevCountry && c !== "No information available") {
+                    crossings.push({ when: t, from: prevCountry, to: c });
+                }
+                if (c && c !== "No information available") prevCountry = c;
+            }
+
+            if (crossings.length) {
+                blocks.push({ type: "h1", text: "Attraversamenti di confine (stime)" });
+                blocks.push({
+                    type: "table",
+                    pageSize: 30,
+                    headers: ["Quando", "Da", "A"],
+                    rows: crossings.map((x) => ({ cells: [s(x.when), s(x.from), s(x.to)] })),
+                });
+            }
+
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Quando", "Tipo", "Paese", "Regione", "Contachilometri"],
+                rows: sortedPlaces.map((r: any) => ({
+                    cells: [s(r?.entryTime), s(r?.entryTypeDailyWorkPeriod), s(r?.dailyWorkPeriodCountry), s(r?.dailyWorkPeriodRegion), s(r?.vehicleOdometerValue)],
+                    details: {
+                        title: `Registrazione luogo: ${s(r?.entryTime) || "—"}`,
+                        headers: ["Campo", "Valore"],
+                        rows: flattenToItalianRows(r ?? {}),
+                    }
+                })),
+            });
+
+            // Chilometraggio per giornata (stime)
+            const byDay: Record<string, { minKm: number; maxKm: number; minT?: string; maxT?: string }> = {};
+            for (const r of sortedPlaces) {
+                const ts = s(r?.entryTime);
+                const day = ts ? ts.slice(0, 10) : "";
+                if (!day) continue;
+                const km = parseKm(r?.vehicleOdometerValue);
+                if (km === null) continue;
+                const cur = byDay[day];
+                if (!cur) {
+                    byDay[day] = { minKm: km, maxKm: km, minT: ts, maxT: ts };
+                } else {
+                    if (km < cur.minKm) { cur.minKm = km; cur.minT = ts; }
+                    if (km > cur.maxKm) { cur.maxKm = km; cur.maxT = ts; }
+                }
+            }
+            const odoRows = Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b)).map(([day, v]) => ({
+                cells: [day, `${v.minKm}`, `${v.maxKm}`, v.minT || "", v.maxT || ""]
+            }));
+
+            blocks.push({ type: "h1", text: "Chilometraggio giornaliero (stime)" });
+            if (!odoRows.length) {
+                blocks.push({ type: "p", text: "Nessun dato disponibile." });
+            } else {
+                blocks.push({
+                    type: "table",
+                    pageSize: 30,
+                    headers: ["Data", "Km (min)", "Km (max)", "Ora min", "Ora max"],
+                    rows: odoRows,
+                });
+            }
+        }
+    }
+
     // VEHICLE UNIT: show readable vehicle identity and calibration overview
     if (entityType === "VEHICLE_UNIT") {
         blocks.push({ type: "h1", text: "Dati veicolo (unità veicolo)" });
@@ -309,6 +489,89 @@ function buildReportFromMerged(input: any): ReportDocument {
                     })
             });
         }
+                // Utilizzo scomparti (slot 1/2) - carte inserite nella VU
+        const acts = combinedData?.vu_activities_2_v2 ?? combinedData?.vu_activities_2 ?? combinedData?.vu_activities_1;
+        const actsArr: any[] = Array.isArray(acts) ? acts : acts ? [acts] : [];
+        const iwRecords: any[] = [];
+        for (const a of actsArr) {
+            const recs = a?.vu_card_iw_data?.vu_card_iw_records;
+            if (Array.isArray(recs)) iwRecords.push(...recs);
+        }
+
+        // Dedup basato su slot + carta + orari
+        const dedup = new Map<string, any>();
+        for (const r of iwRecords) {
+            const key = [
+                s(r?.card_slot_number),
+                s(r?.card_number),
+                s(r?.card_insertion_time),
+                s(r?.card_withdrawal_time),
+            ].join("|");
+            if (!dedup.has(key)) dedup.set(key, r);
+        }
+        const iw = Array.from(dedup.values()).sort((a: any, b: any) => String(a?.card_insertion_time ?? "").localeCompare(String(b?.card_insertion_time ?? "")));
+
+        if (iw.length) {
+            blocks.push({ type: "h1", text: "Utilizzo scomparti (slot 1/2)" });
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Inserimento", "Estrazione", "Slot", "Conducente", "Numero carta", "Km (in→out)", "Manuale"],
+                rows: iw.map((r: any) => {
+                    const kmIn = r?.vehicle_odometer_value_at_insertion ?? "";
+                    const kmOut = r?.vehicle_odometer_value_at_withdrawal ?? "";
+                    const km = (kmIn || kmOut) ? `${s(kmIn)} → ${s(kmOut)}` : "—";
+                    const holder = r?.card_holder_name ? `${s(r.card_holder_name?.holder_surname)} ${s(r.card_holder_name?.holder_first_names)}`.trim() : "";
+                    return {
+                        cells: [
+                            s(r?.card_insertion_time),
+                            s(r?.card_withdrawal_time),
+                            s(r?.card_slot_number),
+                            holder || "—",
+                            s(r?.card_number),
+                            km,
+                            r?.manual_input_flag ? "Sì" : "No",
+                        ],
+                        details: {
+                            title: `Carta in slot ${s(r?.card_slot_number) || "—"}`,
+                            headers: ["Campo", "Valore"],
+                            rows: flattenToItalianRows(r ?? {}),
+                        }
+                    };
+                })
+            });
+        }
+
+        // Blocchi aziendali (Company Lock) - solo se presenti record
+        const ov = combinedData?.vu_overview_2_v2 ?? combinedData?.vu_overview_2 ?? combinedData?.vu_overview_1;
+        const lockBox = ov?.vu_company_locks_record_array ?? ov?.vu_company_locks_data ?? ov?.companyLocks;
+        const lockRecords: any[] =
+            Array.isArray(lockBox) ? lockBox :
+            Array.isArray(lockBox?.records) ? lockBox.records :
+            Array.isArray(lockBox?.vu_company_locks_records) ? lockBox.vu_company_locks_records :
+            [];
+
+        if (lockRecords.length) {
+            blocks.push({ type: "h1", text: "Blocchi aziendali (Company Lock)" });
+            blocks.push({
+                type: "table",
+                pageSize: 30,
+                headers: ["Azienda", "Carta azienda", "Da", "A"],
+                rows: lockRecords.map((r: any) => ({
+                    cells: [
+                        s(r?.company_name || r?.companyName || ""),
+                        s(r?.company_card_number || r?.companyCardNumber || ""),
+                        s(r?.company_lock_in_time || r?.lockInTime || r?.lock_in_time || ""),
+                        s(r?.company_lock_out_time || r?.lockOutTime || r?.lock_out_time || ""),
+                    ],
+                    details: {
+                        title: `Company Lock: ${s(r?.company_name || r?.companyName || "") || "—"}`,
+                        headers: ["Campo", "Valore"],
+                        rows: flattenToItalianRows(r ?? {}),
+                    }
+                })),
+            });
+        }
     }
 
     // Reg 561/2006 (driver files only)
@@ -317,25 +580,31 @@ function buildReportFromMerged(input: any): ReportDocument {
         blocks.push(...(build561Blocks(c561, combinedData) as any));
     }
 
-    // Daily totals table (driver)
-    if (dailyTotals.length && entityType === "DRIVER_CARD") {
+    // Totali giornalieri (sempre visibile per carta conducente)
+    if (entityType === "DRIVER_CARD") {
         blocks.push({ type: "h1", text: "Totali giornalieri (da tachigrafo)" });
-        blocks.push({
-            type: "table",
-            pageSize: 40,
-            headers: ["Data", "Guida", "Lavoro", "Disponibilità", "Riposo", "Km"],
-            rows: dailyTotals.map((d) => ({
-                cells: [
-                    s(d.date),
-                    fmtMinutes(d.drivingMinutes),
-                    fmtMinutes(d.workMinutes),
-                    fmtMinutes(d.availabilityMinutes),
-                    fmtMinutes(d.restMinutes),
-                    d.distanceKm === undefined ? "" : String(d.distanceKm),
-                ]
-            })),
-        });
+
+        if (!dailyTotals.length) {
+            blocks.push({ type: "p", text: "Nessun dato disponibile." });
+        } else {
+            blocks.push({
+                type: "table",
+                pageSize: 40,
+                headers: ["Data", "Guida", "Lavoro", "Disponibilità", "Riposo", "Km"],
+                rows: dailyTotals.map((d) => ({
+                    cells: [
+                        s(d.date),
+                        fmtMinutes(d.drivingMinutes),
+                        fmtMinutes(d.workMinutes),
+                        fmtMinutes(d.availabilityMinutes),
+                        fmtMinutes(d.restMinutes),
+                        d.distanceKm === undefined ? "" : String(d.distanceKm),
+                    ]
+                })),
+            });
+        }
     }
+
 
     // Events/Faults (driver + vehicle)
     const normEvents: any[] = Array.isArray(normalized?.events) ? normalized.events : [];
@@ -343,7 +612,9 @@ function buildReportFromMerged(input: any): ReportDocument {
     const eventCount = normEvents.length;
     const faultCount = normFaults.length;
 
-    if (eventCount || faultCount) {
+    const showEventsSection = entityType === "DRIVER_CARD" ? true : (eventCount || faultCount);
+
+    if (showEventsSection) {
         blocks.push({ type: "h1", text: "Eventi e anomalie" });
         blocks.push({
             type: "table",
@@ -354,6 +625,10 @@ function buildReportFromMerged(input: any): ReportDocument {
                 { cells: [iconizeFaultLabel("Guasti"), String(faultCount)] },
             ]
         });
+
+        if (!eventCount && !faultCount) {
+            blocks.push({ type: "p", text: "Nessun dato disponibile." });
+        }
 
         if (normEvents.length) {
             blocks.push({ type: "h1", text: "Dettaglio eventi" });
@@ -389,6 +664,8 @@ function buildReportFromMerged(input: any): ReportDocument {
             });
         }
     }
+
+
 
     blocks.push({
         type: "p",

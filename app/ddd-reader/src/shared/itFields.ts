@@ -102,6 +102,35 @@ const KEY_IT: Record<string, string> = {
   old_time_value: "Ora precedente",
   new_time_value: "Ora nuova",
   next_calibration_date: "Prossima calibrazione",
+
+  // --- Card IW (VU activities) ---
+  card_insertion_time: "Inserimento carta",
+  card_withdrawal_time: "Estrazione carta",
+  card_slot_number: "Numero slot",
+  manual_input_flag: "Inserimento manuale",
+  vehicle_odometer_value_at_insertion: "Contachilometri (inserimento)",
+  vehicle_odometer_value_at_withdrawal: "Contachilometri (estrazione)",
+  previous_vehicle_info: "Veicolo precedente",
+  card_holder_name: "Intestatario carta",
+  holder_surname: "Cognome",
+  holder_first_names: "Nome",
+
+  // --- Driver daily activity segments ---
+  activity: "Attività",
+  activityCode: "Codice attività",
+  "slot status": "Stato slot",
+  "Raw data": "Dati grezzi",
+  from: "Da",
+  duration: "Durata",
+  activityDayDistance: "Distanza giorno (km)",
+
+  // --- Place Daily Work Period ---
+  entryTime: "Data/ora registrazione",
+  entryTypeDailyWorkPeriod: "Tipo registrazione",
+  dailyWorkPeriodCountry: "Paese",
+  dailyWorkPeriodRegion: "Regione",
+  vehicleOdometerValue: "Contachilometri",
+
 };
 
 function capText(s: string, maxLen = 4000): string {
