@@ -10,6 +10,7 @@ const api = {
   parseDdd: (dddPath: string) => ipcRenderer.invoke("ddd:parse", dddPath),
   exportWord: (json: any) => ipcRenderer.invoke("ddd:exportWord", json),
   exportJson: (json: any) => ipcRenderer.invoke("ddd:exportJson", json),
+  exportRecordPdf: (payload: any) => ipcRenderer.invoke("ddd:exportRecordPdf", payload),
 
   onParseProgress: (callback: (payload: { percent: number; stage?: string }) => void) => {
     const handler = (_: any, payload: any) => callback(payload);

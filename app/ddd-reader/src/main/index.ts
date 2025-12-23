@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import fs from "node:fs/promises";
 import { exportReportToWord } from "./word/exportWord";
+import { exportRecordPdf } from "./pdf/exportRecordPdf";
 import { normalizeMergedOutput } from "../shared/normalize";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import icon from "../../resources/icon.png?asset";
@@ -166,4 +167,13 @@ ipcMain.handle("ddd:exportJson", async (_evt, json: any) => {
 
   await fs.writeFile(res.filePath, JSON.stringify(json, null, 2), "utf-8");
   return res.filePath;
+});
+
+// ----------------------
+// Export PDF (infrazioni / eventi)
+// ----------------------
+
+ipcMain.handle("ddd:exportRecordPdf", async (_evt, payload: any) => {
+  if (!payload) return null;
+  return await exportRecordPdf(payload);
 });

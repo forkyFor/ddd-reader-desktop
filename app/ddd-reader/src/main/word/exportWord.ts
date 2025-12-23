@@ -77,15 +77,23 @@ function cell(text: string, isHeader = false) {
 }
 
 function makeTable(headers: string[], rows: ReportTableRow[]) {
+    const hasPdf = rows.some((r: any) => Array.isArray(r?.actions) && r.actions.some((a: any) => a?.type === "pdf"));
+    const outHeaders = hasPdf ? [...headers, "PDF"] : headers;
+
     const headerRow = new TableRow({
-        children: headers.map((h) => cell(h, true)),
+        children: outHeaders.map((h) => cell(h, true)),
     });
 
-    const bodyRows = rows.map((r) =>
-        new TableRow({
-            children: (r.cells ?? []).map((c) => cell(String(c ?? ""))),
-        })
-    );
+    const bodyRows = rows.map((r: any) => {
+        const baseCells = (r.cells ?? []).map((c: any) => cell(String(c ?? "")));
+        if (!hasPdf) {
+            return new TableRow({ children: baseCells });
+        }
+
+        const action = Array.isArray(r?.actions) ? r.actions.find((a: any) => a?.type === "pdf") : null;
+        const pdfCellText = action ? `[[ico:pdf]] ${String(action.code ?? "")}` : "";
+        return new TableRow({ children: [...baseCells, cell(pdfCellText)] });
+    });
 
     return new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },

@@ -17,6 +17,7 @@ import timePng from "../assets/event-icons/time.png";
 import warningPng from "../assets/event-icons/warning.png";
 import infoPng from "../assets/event-icons/info.png";
 import okPng from "../assets/event-icons/ok.png";
+import pdfPng from "../assets/event-icons/pdf.png";
 
 export function getEventIconUrl(key: string): string | null {
     const k = String(key ?? "").toLowerCase();
@@ -38,5 +39,6 @@ export function getEventIconUrl(key: string): string | null {
     if (k === "warning") return warningPng;
     if (k === "info") return infoPng;
     if (k === "ok") return okPng;
+    if (k === "pdf") return pdfPng;
     return null;
 }

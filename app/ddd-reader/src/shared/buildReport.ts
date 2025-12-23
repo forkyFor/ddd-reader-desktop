@@ -577,7 +577,14 @@ function buildReportFromMerged(input: any): ReportDocument {
     // Reg 561/2006 (driver files only)
     if (isDriverFile) {
         const c561 = computeReg561FromCombinedData(combinedData);
-        blocks.push(...(build561Blocks(c561, combinedData) as any));
+        blocks.push(
+            ...(build561Blocks(c561, combinedData, {
+                companyName: undefined,
+                driverName: entityType === "DRIVER_CARD" ? driverName : undefined,
+                driverCardNumber: entityType === "DRIVER_CARD" ? driverCardNumber : undefined,
+                vehicle: entityType === "VEHICLE_UNIT" ? (primaryVehicle?.registration || vehicleRegs?.[0]) : vehicleRegs?.[0],
+            }) as any)
+        );
     }
 
     // Totali giornalieri (sempre visibile per carta conducente)
@@ -636,14 +643,59 @@ function buildReportFromMerged(input: any): ReportDocument {
                 type: "table",
                 pageSize: 30,
                 headers: ["Quando", "Tipo", "Veicolo"],
-                rows: normEvents.map((e: any) => ({
-                    cells: [s(e?.when), iconizeEventLabel(s(e?.type)), s(e?.vehicle)],
-                    details: {
-                        title: `Evento: ${s(e?.type) || "—"}`,
-                        headers: ["Campo", "Valore"],
-                        rows: flattenToItalianRows(e?.raw ?? e ?? {}),
-                    }
-                }))
+                rows: normEvents.map((e: any, idx: number) => {
+                    const detailsRows = flattenToItalianRows(e?.raw ?? e ?? {});
+                    const rawType = (e?.raw?.event_type ?? e?.event_type ?? "X");
+                    const code = `E${String(rawType)}_${idx + 1}`;
+                    const when = String(e?.when || "");
+                    const t = String(e?.type || "").toLowerCase();
+                    const hint =
+                        t.includes("senza carta") || t.includes("without card") ? "Possibile infrazione: guida senza carta (uso improprio della carta)." :
+                        (t.includes("inser") && t.includes("guida")) ? "Possibile infrazione: inserimento/uso carta durante la guida." :
+                        (t.includes("veloc") || t.includes("overspeed")) ? "Possibile infrazione: eccesso di velocità (>1 minuto)." :
+                        (t.includes("sicurez") || t.includes("security") || t.includes("manom") || t.includes("tamper")) ? "Possibile infrazione: evento di sicurezza/manomissione." :
+                        "";
+                    return {
+                        cells: [s(e?.when), iconizeEventLabel(s(e?.type)), s(e?.vehicle)],
+                        actions: [
+                            {
+                                type: "pdf",
+                                code,
+                                payload: {
+                                    kind: "EVENT",
+                                    code,
+                                    title: `Dettaglio evento ${code} del ${when || "—"}`,
+                                    companyName: undefined,
+                                    driver: {
+                                        name: entityType === "DRIVER_CARD" ? driverName : undefined,
+                                        cardNumber: entityType === "DRIVER_CARD" ? driverCardNumber : undefined,
+                                    },
+                                    vehicle: e?.vehicle || (entityType === "VEHICLE_UNIT" ? primaryVehicle?.registration : vehicleRegs?.[0]),
+                                    period: when ? { start: when, end: when } : undefined,
+                                    legal: {
+                                        title: "Evento/Anomalia tachigrafo",
+                                        paragraphs: [
+                                            "Report di dettaglio generato dal file .ddd.",
+                                            "Il significato normativo specifico dipende dalla tipologia di evento/anomalia e dal contesto.",
+                                        ],
+                                    },
+                                    detail: {
+                                        title: "Dettaglio evento",
+                                        paragraphs: [String(e?.type || "Evento"), hint].filter(Boolean),
+                                    },
+                                    tables: [{ title: "Campi evento", headers: ["Campo", "Valore"], rows: detailsRows }],
+                                    footerNote: "Il conducente dichiara di aver preso nota dell'evento/anomalia in oggetto",
+                                    requireSignature: true,
+                                },
+                            },
+                        ],
+                        details: {
+                            title: `Evento: ${s(e?.type) || "—"}`,
+                            headers: ["Campo", "Valore"],
+                            rows: detailsRows,
+                        },
+                    };
+                })
             });
         }
 
@@ -653,14 +705,52 @@ function buildReportFromMerged(input: any): ReportDocument {
                 type: "table",
                 pageSize: 30,
                 headers: ["Quando", "Tipo", "Veicolo"],
-                rows: normFaults.map((f: any) => ({
-                    cells: [s(f?.when), iconizeFaultLabel(s(f?.type)), s(f?.vehicle)],
-                    details: {
-                        title: `Guasto: ${s(f?.type) || "—"}`,
-                        headers: ["Campo", "Valore"],
-                        rows: flattenToItalianRows(f?.raw ?? f ?? {}),
-                    }
-                }))
+                rows: normFaults.map((f: any, idx: number) => {
+                    const detailsRows = flattenToItalianRows(f?.raw ?? f ?? {});
+                    const rawType = (f?.raw?.fault_type ?? f?.fault_type ?? "X");
+                    const code = `G${String(rawType)}_${idx + 1}`;
+                    const when = String(f?.when || "");
+                    return {
+                        cells: [s(f?.when), iconizeFaultLabel(s(f?.type)), s(f?.vehicle)],
+                        actions: [
+                            {
+                                type: "pdf",
+                                code,
+                                payload: {
+                                    kind: "FAULT",
+                                    code,
+                                    title: `Dettaglio guasto ${code} del ${when || "—"}`,
+                                    companyName: undefined,
+                                    driver: {
+                                        name: entityType === "DRIVER_CARD" ? driverName : undefined,
+                                        cardNumber: entityType === "DRIVER_CARD" ? driverCardNumber : undefined,
+                                    },
+                                    vehicle: f?.vehicle || (entityType === "VEHICLE_UNIT" ? primaryVehicle?.registration : vehicleRegs?.[0]),
+                                    period: when ? { start: when, end: when } : undefined,
+                                    legal: {
+                                        title: "Guasto tachigrafo",
+                                        paragraphs: [
+                                            "Report di dettaglio generato dal file .ddd.",
+                                            "I guasti tecnici possono implicare obblighi di stampa/registrazione e verifiche in officina autorizzata.",
+                                        ],
+                                    },
+                                    detail: {
+                                        title: "Dettaglio guasto",
+                                        paragraphs: [String(f?.type || "Guasto")],
+                                    },
+                                    tables: [{ title: "Campi guasto", headers: ["Campo", "Valore"], rows: detailsRows }],
+                                    footerNote: "Il conducente dichiara di aver preso nota del guasto in oggetto",
+                                    requireSignature: true,
+                                },
+                            },
+                        ],
+                        details: {
+                            title: `Guasto: ${s(f?.type) || "—"}`,
+                            headers: ["Campo", "Valore"],
+                            rows: detailsRows,
+                        },
+                    };
+                })
             });
         }
     }

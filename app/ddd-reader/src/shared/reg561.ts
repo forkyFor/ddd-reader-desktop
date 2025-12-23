@@ -407,9 +407,49 @@ function buildBreakViolationDetails(combinedData: any, v: Reg561BreakViolation):
 
 export function build561Blocks(
   c561: Reg561Report,
-  combinedData?: any
+  combinedData?: any,
+  meta?: {
+    companyName?: string;
+    driverName?: string;
+    driverCardNumber?: string;
+    vehicle?: string;
+  }
 ): { type: any; text?: string; headers?: string[]; rows?: any[]; pageSize?: number }[] {
   const blocks: any[] = [];
+
+  function basePdfPayload(args: {
+    code: string;
+    title: string;
+    period?: { start?: string; end?: string };
+    legalTitle?: string;
+    legalParagraphs?: string[];
+    detailParagraphs?: string[];
+    tables?: { title?: string; headers: string[]; rows: string[][] }[];
+  }) {
+    return {
+      kind: "INFRACTION",
+      code: args.code,
+      title: args.title,
+      companyName: meta?.companyName,
+      driver: {
+        name: meta?.driverName,
+        cardNumber: meta?.driverCardNumber,
+      },
+      vehicle: meta?.vehicle,
+      period: args.period,
+      legal: {
+        title: args.legalTitle,
+        paragraphs: args.legalParagraphs ?? [],
+      },
+      detail: {
+        title: "Dettaglio infrazione",
+        paragraphs: args.detailParagraphs ?? [],
+      },
+      tables: args.tables ?? [],
+      footerNote: "Il conducente dichiara di aver preso nota dell'infrazione in oggetto",
+      requireSignature: true,
+    };
+  }
 
   blocks.push({ type: "h1", text: "Reg. (CE) 561/2006 – Sintesi (calcolo da tachigrafo)" });
 
@@ -445,17 +485,58 @@ export function build561Blocks(
       type: "table",
       pageSize: 40,
       headers: ["Data", "Guida", "10h?", "Violazione guida", "Riposo max", "Riposo"],
-      rows: daily.map((d: any) => ({
-        cells: [
-          s(d.date),
-          fmtMinutes(d.drivingMinutes),
-          d.isExtendedTo10h ? "Sì" : "No",
-          d.dailyDrivingViolation ? iconizeViolationLabel(s(d.dailyDrivingViolation)) : "",
-          fmtMinutes(d.longestRestMinutes),
-          iconizeStatusLabel(s(d.dailyRestFlag || "")),
-        ],
-        details: combinedData ? buildActivityDetailsTable(combinedData, String(d.date)) : undefined,
-      })),
+      rows: daily.map((d: any) => {
+        const details = combinedData ? buildActivityDetailsTable(combinedData, String(d.date)) : undefined;
+
+        const isDriveViolation = !!d.dailyDrivingViolation;
+        const isRestInsuff = String(d.dailyRestFlag || "") === "INSUFFICIENT";
+
+        const actions: any[] = [];
+        if (isDriveViolation || isRestInsuff) {
+          const parts: string[] = [];
+          const detailPars: string[] = [];
+          if (isDriveViolation) {
+            parts.push("D0601");
+            detailPars.push(String(d.dailyDrivingViolation));
+          }
+          if (isRestInsuff) {
+            parts.push("D0801");
+            detailPars.push(`Riposo giornaliero insufficiente (riposo max ${fmtMinutes(d.longestRestMinutes)}).`);
+          }
+
+          const code = `${parts.join("_")}_${String(d.date)}`;
+          actions.push({
+            type: "pdf",
+            code,
+            payload: basePdfPayload({
+              code,
+              title: `Dettaglio infrazione ${code} del ${String(d.date)}`,
+              period: { start: `${String(d.date)}T00:00:00Z`, end: `${String(d.date)}T23:59:59Z` },
+              legalTitle: "Regolamento (CE) n. 561/2006",
+              legalParagraphs: [
+                "Verifica automatica dei tempi di guida, interruzioni e riposo sulla base dei dati del tachigrafo.",
+                isDriveViolation ? "Riferimento: Art. 6 (tempi di guida)." : "",
+                isRestInsuff ? "Riferimento: Art. 8 (riposi)." : "",
+              ].filter(Boolean),
+              detailParagraphs: detailPars,
+              tables: details ? [{ title: "Tabulato attività (giorno)", headers: details.headers, rows: details.rows }] : [],
+            }),
+          });
+        }
+
+        return {
+          cells: [
+            s(d.date),
+            fmtMinutes(d.drivingMinutes),
+            d.isExtendedTo10h ? "Sì" : "No",
+            d.dailyDrivingViolation ? iconizeViolationLabel(s(d.dailyDrivingViolation)) : "",
+            fmtMinutes(d.longestRestMinutes),
+            iconizeStatusLabel(s(d.dailyRestFlag || "")),
+          ],
+          actions: actions.length ? actions : undefined,
+          details,
+        };
+      }),
     });
   }
 
@@ -484,6 +565,23 @@ export function build561Blocks(
 
         return {
           cells: [s(w.isoWeek), fmtMinutes(w.drivingMinutes), w.weeklyDrivingViolation ? iconizeViolationLabel(s(w.weeklyDrivingViolation)) : ""],
+          actions: w.weeklyDrivingViolation
+            ? [
+                {
+                  type: "pdf",
+                  code: `W0601_${weekKey}`,
+                  payload: basePdfPayload({
+                    code: `W0601_${weekKey}`,
+                    title: `Dettaglio infrazione W0601 della settimana ${weekKey}`,
+                    period: { start: daysInWeek?.[0]?.date, end: daysInWeek?.[daysInWeek.length - 1]?.date },
+                    legalTitle: "Regolamento (CE) n. 561/2006 – Art. 6",
+                    legalParagraphs: ["Limite di guida settimanale: massimo 56 ore."] ,
+                    detailParagraphs: [String(w.weeklyDrivingViolation)],
+                    tables: details ? [{ title: details.title, headers: details.headers, rows: details.rows }] : [],
+                  }),
+                },
+              ]
+            : undefined,
           details,
         };
       }),
@@ -496,10 +594,30 @@ export function build561Blocks(
       type: "table",
       pageSize: 30,
       headers: ["Quando", "Guida da ultima pausa", "Nota"],
-      rows: breakViolations.map((v: any) => ({
-        cells: [s(v.at), fmtMinutes(v.drivingSinceLastBreakMinutes), v.message ? iconizeViolationLabel(s(v.message)) : ""],
-        details: combinedData ? buildBreakViolationDetails(combinedData, v) : undefined,
-      })),
+      rows: breakViolations.map((v: any) => {
+        const details = combinedData ? buildBreakViolationDetails(combinedData, v) : undefined;
+        const at = String(v.at || "");
+        const code = `B0701_${at.replace(/[^0-9TZ:-]+/g, "")}`;
+        return {
+          cells: [s(v.at), fmtMinutes(v.drivingSinceLastBreakMinutes), v.message ? iconizeViolationLabel(s(v.message)) : ""],
+          actions: [
+            {
+              type: "pdf",
+              code,
+              payload: basePdfPayload({
+                code,
+                title: `Dettaglio infrazione ${code}`,
+                period: { start: at, end: at },
+                legalTitle: "Regolamento (CE) n. 561/2006 – Art. 7",
+                legalParagraphs: ["Dopo 4h30 di guida è obbligatoria una pausa di almeno 45 minuti (anche frazionabile 15+30)."],
+                detailParagraphs: [String(v.message || "Violazione pausa")],
+                tables: details ? [{ title: details.title, headers: details.headers, rows: details.rows }] : [],
+              }),
+            },
+          ],
+          details,
+        };
+      }),
     });
   }
 
@@ -515,6 +633,29 @@ export function build561Blocks(
         const days = daily.filter((d) => String(d.date) >= start && String(d.date) <= end);
         return {
           cells: [`${s(v.windowStart)} → ${s(v.windowEnd)}`, fmtMinutes(v.drivingMinutes), v.message ? iconizeViolationLabel(s(v.message)) : ""],
+          actions: [
+            {
+              type: "pdf",
+              code: `F0601_${start}_${end}`,
+              payload: basePdfPayload({
+                code: `F0601_${start}_${end}`,
+                title: `Dettaglio infrazione F0601 (90h/14 giorni)`,
+                period: { start, end },
+                legalTitle: "Regolamento (CE) n. 561/2006 – Art. 6",
+                legalParagraphs: ["Limite di guida bisettimanale: massimo 90 ore su due settimane consecutive."],
+                detailParagraphs: [String(v.message || "Violazione 90h/14 giorni")],
+                tables: days.length
+                  ? [
+                      {
+                        title: `Dettaglio guida giornaliera (${start} → ${end})`,
+                        headers: ["Data", "Guida"],
+                        rows: days.map((d: any) => [s(d.date), fmtMinutes(d.drivingMinutes)]),
+                      },
+                    ]
+                  : [],
+              }),
+            },
+          ],
           details: days.length
             ? {
                 title: `Dettaglio finestra 14 giorni ${start} → ${end}`,

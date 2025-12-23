@@ -1,5 +1,15 @@
+export type ReportRowAction =
+    | {
+          type: "pdf";
+          /** Codice personalizzato (es. W0501) */
+          code: string;
+          /** Payload serializzabile, usato per generare il PDF in main */
+          payload: any;
+      };
+
 export type ReportTableRow = {
     cells: string[];
+    actions?: ReportRowAction[];
     details?: {
         title: string;
         headers: string[];

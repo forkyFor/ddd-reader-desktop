@@ -26,6 +26,11 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
     const safeHeaders = Array.isArray(headers) ? headers : [];
     const safeRows = Array.isArray(rows) ? rows : [];
 
+    const hasPdfAction = useMemo(
+        () => safeRows.some((r) => (r as any)?.actions?.some((a: any) => a?.type === "pdf")),
+        [safeRows]
+    );
+
     const [page, setPage] = useState(1);
     const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
     const [search, setSearch] = useState("");
@@ -197,6 +202,22 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
                                     </span>
                                 </th>
                             ))}
+
+                            {hasPdfAction && (
+                                <th
+                                    key="__pdf"
+                                    style={{
+                                        textAlign: "left",
+                                        padding: "10px 12px",
+                                        fontSize: 13,
+                                        borderBottom: "1px solid rgba(255,255,255,0.15)",
+                                        background: "rgba(255,255,255,0.06)",
+                                        userSelect: "none",
+                                    }}
+                                >
+                                    PDF
+                                </th>
+                            )}
                         </tr>
                     </thead>
 
@@ -232,11 +253,60 @@ export default function ReportTable({ headers, rows, pageSize = 50 }: Props) {
                                                 {renderCell(c)}
                                             </td>
                                         ))}
+
+                                        {hasPdfAction && (
+                                            <td
+                                                style={{
+                                                    padding: "10px 12px",
+                                                    fontSize: 13,
+                                                    borderBottom: "1px solid rgba(255,255,255,0.08)",
+                                                    verticalAlign: "top",
+                                                    whiteSpace: "pre-wrap",
+                                                }}
+                                            >
+                                                {(() => {
+                                                    const pdf = (r as any)?.actions?.find((a: any) => a?.type === "pdf");
+                                                    if (!pdf) return "";
+                                                    const url = getEventIconUrl("pdf");
+                                                    return (
+                                                        <button
+                                                            title={`Genera PDF (${pdf.code})`}
+                                                            onClick={async (e) => {
+                                                                e.preventDefault();
+                                                                e.stopPropagation();
+                                                                try {
+                                                                    // @ts-ignore
+                                                                    const out = await (window as any).api?.exportRecordPdf?.(pdf.payload);
+                                                                    if (out) console.log("PDF salvato:", out);
+                                                                } catch (err) {
+                                                                    console.error("Export PDF fallito", err);
+                                                                    alert("Impossibile generare il PDF.");
+                                                                }
+                                                            }}
+                                                            style={{
+                                                                display: "inline-flex",
+                                                                alignItems: "center",
+                                                                gap: 8,
+                                                                padding: "6px 10px",
+                                                                borderRadius: 8,
+                                                                border: "1px solid rgba(255,255,255,0.18)",
+                                                                background: "rgba(0,0,0,0.25)",
+                                                                color: "white",
+                                                                cursor: "pointer",
+                                                            }}
+                                                        >
+                                                            {url && <img src={url} alt="pdf" style={{ width: 16, height: 16 }} />}
+                                                            <span style={{ fontSize: 12 }}>{pdf.code}</span>
+                                                        </button>
+                                                    );
+                                                })()}
+                                            </td>
+                                        )}
                                     </tr>
 
                                     {isOpen && r.details && (
                                         <tr key={`${globalIndex}-details`}>
-                                            <td colSpan={safeHeaders.length} style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                                            <td colSpan={safeHeaders.length + (hasPdfAction ? 1 : 0)} style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
                                                 <div style={{ marginBottom: 10, fontSize: 13, opacity: 0.9 }}>{r.details.title}</div>
 
                                                 <div style={{ overflowX: "auto" }}>

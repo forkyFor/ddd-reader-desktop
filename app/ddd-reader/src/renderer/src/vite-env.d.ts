@@ -8,6 +8,7 @@ interface Window {
         parseDdd(path: string): Promise<any>;
         exportWord(json: any): Promise<string | null>;
         exportJson(json: any): Promise<string | null>;
+        exportRecordPdf(payload: any): Promise<string | null>;
 
         onParseProgress(callback: (payload: { percent: number; stage?: string }) => void): () => void;
     };
