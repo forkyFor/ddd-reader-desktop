@@ -3,6 +3,7 @@ import { build561Blocks, computeReg561FromCombinedData, deriveDailyTotalsFromCom
 import { fmtMinutes } from "./timeUtils";
 import { normalizeMergedOutput, toTitle } from "./normalize";
 import { iconizeEventLabel, iconizeFaultLabel, iconizeActivityLabel } from "./iconTokens";
+import { flattenToItalianRows } from "./itFields";
 
 const PAGE_SIZE_DEFAULT = 50;
 
@@ -302,7 +303,7 @@ function buildReportFromMerged(input: any): ReportDocument {
                             details: {
                                 title: `Calibrazione: ${when || "—"}`,
                                 headers: ["Campo", "Valore"],
-                                rows: Object.entries(r ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                                rows: flattenToItalianRows(r ?? {}),
                             }
                         };
                     })
@@ -365,7 +366,7 @@ function buildReportFromMerged(input: any): ReportDocument {
                     details: {
                         title: `Evento: ${s(e?.type) || "—"}`,
                         headers: ["Campo", "Valore"],
-                        rows: Object.entries(e?.raw ?? e ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                        rows: flattenToItalianRows(e?.raw ?? e ?? {}),
                     }
                 }))
             });
@@ -382,7 +383,7 @@ function buildReportFromMerged(input: any): ReportDocument {
                     details: {
                         title: `Guasto: ${s(f?.type) || "—"}`,
                         headers: ["Campo", "Valore"],
-                        rows: Object.entries(f?.raw ?? f ?? {}).map(([k, v]) => [s(k), s(v, 4000)]),
+                        rows: flattenToItalianRows(f?.raw ?? f ?? {}),
                     }
                 }))
             });

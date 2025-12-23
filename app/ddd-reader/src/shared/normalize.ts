@@ -30,7 +30,7 @@ export type NormalizedVehicle = {
 // Minimal mapping for tachograph "member state" numeric codes seen in samples.
 // (Can be extended as needed.)
 const MEMBER_STATE_CODE_TO_NAME: Record<string, string> = {
-  "26": "Italy",
+  "26": "Italia",
 };
 
 function mapMemberState(v: any): string | undefined {
