@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import ReportView from "./components/ReportView";
 import JsonViewer from "./components/JsonViewer";
+import LicensePage from "../pages/LicensePage";
 import { buildReport } from "../../shared/buildReport";
 import type { ReportDocument } from "../../shared/reportModel";
 

@@ -16,6 +16,13 @@ const api = {
     const handler = (_: any, payload: any) => callback(payload);
     ipcRenderer.on("ddd:parseProgress", handler);
     return () => ipcRenderer.removeListener("ddd:parseProgress", handler);
+  },
+  licensing: {
+    getState: () => ipcRenderer.invoke("licensing:getState"),
+    activate: (token: string) => ipcRenderer.invoke("licensing:activate", { token }),
+    validate: () => ipcRenderer.invoke("licensing:validate"),
+    authorizeFile: (req: any) => ipcRenderer.invoke("licensing:authorizeFile", req),
+    clear: () => ipcRenderer.invoke("licensing:clear"),
   }
 };
 

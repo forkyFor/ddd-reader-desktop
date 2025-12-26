@@ -6,6 +6,7 @@ import { exportRecordPdf } from "./pdf/exportRecordPdf";
 import { normalizeMergedOutput } from "../shared/normalize";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import icon from "../../resources/icon.png?asset";
+import { registerLicensingIpc } from "./ipc/licensingIpc";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -53,6 +54,8 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+registerLicensingIpc();
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
